@@ -3,7 +3,10 @@ name: check
 # Runs on every push and PR so a broken migration CLI or FSRS replay is caught
 # before it reaches main. Every fixture is synthetic (migration/tests/fixtures.py) —
 # this workflow never touches a real collection export, needs no secrets, and makes
-# no network request beyond installing dependencies. Never add one.
+# no network request beyond installing dependencies (Deno fetching a remote module
+# like ts-fsrs or @anthropic-ai/sdk for type info counts as installing a dependency,
+# not as a test call — every scan/ test runs against a fake MessagesClient, never
+# the real Anthropic API). Never add a test that makes a real API call.
 #
 # Two jobs, matching the two languages this repo actually uses (D6/D7): Python for
 # the local-only migration CLI (step 0), Deno/TypeScript for everything that will
@@ -30,7 +33,7 @@ jobs:
         # The edge function is checked but never run here — Deno.serve() at its
         # top level would bind a port on import, which is exactly why it's outside
         # src/ and outside this job's test glob below.
-        run: deno check src/fsrs/*.ts src/review/*.ts supabase/functions/sync/index.ts web/demo-server.ts
+        run: deno check src/fsrs/*.ts src/review/*.ts src/scan/*.ts src/auth.ts supabase/functions/sync/index.ts supabase/functions/scan/index.ts web/demo-server.ts
 
       - name: Run tests
         run: deno test --allow-read --allow-env src/

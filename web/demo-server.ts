@@ -26,6 +26,8 @@ import {
 } from "../src/review/handlers.ts";
 import { InMemoryStore } from "../src/review/store.ts";
 import type { CardStateRow, NoteRow } from "../src/review/types.ts";
+import { importExtractedCards } from "../src/scan/import.ts";
+import type { ExtractedCard } from "../src/scan/types.ts";
 
 const DEMO_TOKEN = "demo-token";
 const DEMO_USER = "demo-user";
@@ -93,6 +95,8 @@ async function serveStatic(pathname: string): Promise<Response> {
       ? "text/javascript"
       : path.endsWith(".html")
       ? "text/html"
+      : path.endsWith(".css")
+      ? "text/css"
       : "application/octet-stream";
     return new Response(file, { headers: { "content-type": contentType } });
   } catch {
@@ -103,12 +107,42 @@ async function serveStatic(pathname: string): Promise<Response> {
 Deno.serve({ port: 8787 }, async (req) => {
   const url = new URL(req.url);
 
-  if (!url.pathname.startsWith("/sync")) return serveStatic(url.pathname);
+  // "/scan/" (trailing slash), not a bare "/scan" prefix — "/scan.html"/"/scan.js"
+  // are static files this same check would otherwise wrongly route into the
+  // auth-gated API branch below (caught by curling them directly, not by eye).
+  if (!url.pathname.startsWith("/sync/") && !url.pathname.startsWith("/scan/")) {
+    return serveStatic(url.pathname);
+  }
 
   const auth = req.headers.get("authorization");
   if (auth !== `Bearer ${DEMO_TOKEN}`) return json({ error: "unauthorized" }, 401);
 
   const noteId = url.pathname.match(/\/sync\/note\/([^/]+)$/)?.[1];
+
+  if (req.method === "POST" && url.pathname === "/scan/page") {
+    const body = await req.json();
+    if (!body.imageBase64 || !body.mediaType) {
+      return json({ error: "imageBase64 and mediaType are required" }, 400);
+    }
+    // No real Claude call in the demo (extractVocabularyFromPage is unit-tested
+    // against a fake client in src/scan/extract.test.ts) — a canned card stands in
+    // so the rest of the pipeline (importExtractedCards, the same code the real
+    // edge function calls) is verifiable end-to-end without an API key.
+    const cannedCards: ExtractedCard[] = [{
+      lemma: "сторінка",
+      gloss: "page",
+      lemmaTranslation: "page",
+      partOfSpeech: "noun",
+      example: "Відкрий цю сторінку.",
+      exampleTranslation: "Open this page.",
+    }];
+    const result = await importExtractedCards(store, cannedCards, {
+      deck: body.deck ?? "Ukrainian",
+      language: body.language ?? "uk",
+      source: "scan",
+    });
+    return json(result);
+  }
 
   if (req.method === "GET" && url.pathname === "/sync/decks") {
     return json(await getDeckSummaries(store, DEMO_USER, new Date()));

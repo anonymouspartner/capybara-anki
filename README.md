@@ -58,8 +58,8 @@ Inherited from `capybara-bot`, and they apply here too:
 | 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
 | 2 · Reviewer (due queue, decks, interval previews, night theme) | **done** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) |
 | 3 · Offline (service worker, IndexedDB, queued reviews) | **done** — see [`web/offline.js`](web/offline.js) and [`web/sw.js`](web/sw.js) |
-| 4 · Real migration | not started |
-| 5 · Scanner | not started |
+| 4 · Real migration | blocked on a live Supabase project (Claude never deploys/touches Supabase without an explicit, in-the-moment request) |
+| 5 · Scanner (camera, canvas resize, `/scan`) | **done** — see [`src/scan/`](src/scan/), [`supabase/functions/scan/`](supabase/functions/scan/), [`web/scan.html`](web/scan.html) |
 | 6 · Pronunciation, stats | not started |
 
 See §9 of the design doc for why the migration spike comes first.
@@ -167,3 +167,38 @@ Verified with Playwright: an offline answer queues (pending count `⟳ 1` appear
 the stats strip) and the session keeps advancing; dispatching `online` flushes the
 queue and the count clears; a full page reload while offline still renders the deck
 list, served from the service worker's cached shell and IndexedDB's cached data.
+
+## The scanner
+
+`src/scan/` — the TypeScript port of `ukrainian-anki-scanner/claude_parser.py`
+(docs/DESIGN.md §4.1). `extract.ts` calls Claude to pull yellow-highlighted
+vocabulary off a photo; `import.ts` turns the result straight into `notes` rows
+(D10 — no ingest review step, `PATCH /sync/note/:id` is the repair path for
+anything wrong). 13 tests, all against a fake Claude client — never a real API call.
+
+One real thing this port found by checking rather than assuming: the Python SDK's
+`messages.parse`/`output_format` structured-output helper has no equivalent in
+`@anthropic-ai/sdk@0.39.0`'s `Messages` class (confirmed by fetching and reading its
+actual exports). `extract.ts` uses forced tool-use instead — the same
+schema-strictness (`additionalProperties: false`, a full `required` list), the same
+five failure branches (the two SDKs' error-class hierarchies line up closely enough
+to map one-to-one), the same truncation check ahead of looking at the response's
+content at all.
+
+`supabase/functions/scan/` is the real edge function shape — routing and D13 auth
+(factored into `src/auth.ts`, shared with `sync/`, once two functions needed the
+identical bearer-token check), **not deployed, not deployable yet** (`createNote`
+is a `PostgresStore` stub, same honest gap as `sync/`'s). `web/scan.html`/`scan.js`
+are D8's browser half: `createImageBitmap` (applies EXIF orientation itself) plus a
+canvas resize to the same 1568px edge and 0.85 JPEG quality the Python side used,
+entirely client-side before a photo ever leaves the device.
+
+Verified with Playwright against the demo server (a canned card stands in for the
+real Claude call): scan a photo → see it land in the results list → back to the
+deck list → the deck's new-card count is one higher, proving the note is real and
+immediately reviewable. Caught two real bugs: the demo server's routing gate
+matched a bare `/scan` prefix, which also caught the *static* `/scan.html`/`/scan.js`
+files and 401'd them; and pulling the toolbar's colors into a shared `theme.css`
+(used by both `index.html` and `scan.html`) added a `.icon-btn { display:
+inline-block }` rule that silently outranked the `hidden` attribute's own default,
+so the back button stopped disappearing on the deck-list screen. Both fixed.

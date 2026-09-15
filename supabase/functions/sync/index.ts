@@ -41,25 +41,7 @@ import {
   submitReview,
 } from "../../../src/review/handlers.ts";
 import type { Store } from "../../../src/review/store.ts";
-
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-function resolveUserId(req: Request): string | null {
-  const header = req.headers.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
-  if (!token) return null;
-
-  for (const [tokenVar, userIdVar] of [
-    ["TIM_TOKEN", "TIM_USER_ID"],
-    ["VIKA_TOKEN", "VIKA_USER_ID"],
-  ] as const) {
-    const expected = Deno.env.get(tokenVar);
-    if (expected && token === expected) return Deno.env.get(userIdVar) ?? null;
-  }
-  return null;
-}
+import { resolveUserId } from "../../../src/auth.ts";
 
 // ---------------------------------------------------------------------------
 // Store — NOT YET IMPLEMENTED
@@ -92,6 +74,9 @@ class PostgresStore implements Store {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
   getSchedulerConfig(_userId: string): ReturnType<Store["getSchedulerConfig"]> {
+    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
+  }
+  createNote(_note: Parameters<Store["createNote"]>[0]): ReturnType<Store["createNote"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
   getDecks(_userId: string): ReturnType<Store["getDecks"]> {

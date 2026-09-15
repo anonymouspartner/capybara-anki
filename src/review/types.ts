@@ -58,6 +58,24 @@ export interface NoteRow {
   deck: string;
 }
 
+/** A note not yet in `notes` — what `/scan` (step 5, docs/DESIGN.md §4.1) inserts
+ * directly, per D10 ("no ingest review step"): scan, extract, import, with
+ * edit-in-place (D11) as the only repair path afterward. `source` is the one field
+ * `NoteRow` deliberately omits (provenance the reviewer has no reason to touch) but
+ * that a real insert always has an opinion about. */
+export interface NewNote {
+  lemma: string;
+  gloss: string | null;
+  lemmaTranslation: string | null;
+  partOfSpeech: string | null;
+  language: "uk" | "en";
+  example: string | null;
+  exampleTranslation: string | null;
+  audioUrl: string | null;
+  deck: string;
+  source: "scan" | "bot" | "anki-import";
+}
+
 /** What the due-queue selector needs to know about one note — a projection of
  * `NoteRow` + `CardStateRow`, not a new source of truth. */
 export interface DueCandidate {

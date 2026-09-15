@@ -11,6 +11,7 @@ import type {
   CardStateRow,
   DailyCounts,
   DueCandidate,
+  NewNote,
   NoteRow,
   ReviewRow,
   SchedulerConfigRow,
@@ -20,6 +21,9 @@ export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
   getCardState(noteId: string): Promise<CardStateRow | null>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
+  /** Inserts a note from an ingestion path (`/scan` today) and returns its
+   * generated id. No review step (D10) — the row is immediately reviewable. */
+  createNote(note: NewNote): Promise<string>;
   /** Every deck name with at least one note this user can review — the deck-list
    * screen's row set. */
   getDecks(userId: string): Promise<string[]>;
@@ -67,6 +71,15 @@ export class InMemoryStore implements Store {
     const config = this.schedulerConfigs.get(userId);
     if (!config) throw new Error(`no scheduler_config row for user ${userId}`);
     return Promise.resolve(config);
+  }
+
+  createNote(note: NewNote): Promise<string> {
+    const id = crypto.randomUUID();
+    // `source` has no home in NoteRow (see its docstring) — the fixture doesn't
+    // track provenance at all, matching how getDecks doesn't model per-user access.
+    const { source: _source, ...noteRow } = note;
+    this.notes.set(id, { id, ...noteRow });
+    return Promise.resolve(id);
   }
 
   getDecks(_userId: string): Promise<string[]> {

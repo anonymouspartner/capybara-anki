@@ -1,0 +1,131 @@
+/**
+ * The `/scan` edge function — step 5 (docs/DESIGN.md §9, §4.1). Replaces
+ * `ukrainian-anki-scanner`'s Streamlit upload-and-download flow with a straight
+ * photo-in, notes-imported round trip: no CSV, no .apkg, no export/import tax
+ * (D5). D10: no ingest review step — the extracted cards land in `notes`
+ * immediately; `PATCH /sync/note/:id` (edit-in-place, D11) is the repair path for
+ * anything the model got wrong.
+ *
+ * **Not deployed. Not deployable yet, on purpose — see PostgresStore in
+ * `../sync/index.ts`.** This function imports the same `Store` interface and has
+ * the identical gap: real routing and auth, no real database behind it.
+ *
+ * Routes:
+ *   POST /scan/page  → { imageBase64, mediaType, deck?, language? }
+ *                       deck/language default to "Ukrainian"/"uk" — this pipeline
+ *                       is a Ukrainian book-page scanner (its whole reason to
+ *                       exist, per ukrainian-anki-scanner's own scope); the
+ *                       override exists for whichever future deck turns out to
+ *                       share the vocabulary schema (docs/DESIGN.md §7.5 finding 5).
+ *                       Responds with `{ imported, rejected }` (src/scan/import.ts's
+ *                       `ImportResult`) so the client can show what actually
+ *                       landed, without gating the import on that display (D10).
+ *
+ * Auth: the same D13 bearer token as `/sync` (`../../../src/auth.ts`) — one device
+ * token per person, not a per-request Anthropic key. The Claude API key is this
+ * function's own secret (`ANTHROPIC_API_KEY`, capybara-bot's existing naming),
+ * never something a client supplies (unlike the Streamlit app's sidebar text box,
+ * which existed only because Streamlit has no server-side secret of its own).
+ */
+
+import { createMessagesClient, extractVocabularyFromPage } from "../../../src/scan/extract.ts";
+import { importExtractedCards, type NoteCreator } from "../../../src/scan/import.ts";
+import { PageExtractionError } from "../../../src/scan/types.ts";
+import type { NewNote } from "../../../src/review/types.ts";
+import { resolveUserId } from "../../../src/auth.ts";
+import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.39.0";
+
+// ---------------------------------------------------------------------------
+// Store — NOT YET IMPLEMENTED (see supabase/functions/sync/index.ts's own copy
+// of this note; the same real-project-first reasoning applies here unchanged)
+// ---------------------------------------------------------------------------
+
+class PostgresStore implements NoteCreator {
+  constructor(_supabaseUrl: string, _serviceRoleKey: string) {}
+  createNote(_note: NewNote): Promise<string> {
+    throw new Error("PostgresStore is not implemented yet — see supabase/functions/sync/index.ts");
+  }
+}
+
+function getStore(): NoteCreator {
+  const url = Deno.env.get("SUPABASE_URL");
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) {
+    throw new Error("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — see README for local dev");
+  }
+  return new PostgresStore(url, key);
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+interface ScanPageBody {
+  imageBase64: string;
+  mediaType: "image/jpeg" | "image/png";
+  deck?: string;
+  language?: "uk" | "en";
+}
+
+async function route(req: Request, store: NoteCreator, apiKey: string): Promise<Response> {
+  const url = new URL(req.url);
+
+  if (req.method === "POST" && url.pathname === "/scan/page") {
+    const body: ScanPageBody = await req.json();
+    if (!body.imageBase64 || !body.mediaType) {
+      return json({ error: "imageBase64 and mediaType are required" }, 400);
+    }
+
+    let cards;
+    try {
+      cards = await extractVocabularyFromPage(
+        { base64: body.imageBase64, mediaType: body.mediaType },
+        createMessagesClient(apiKey),
+      );
+    } catch (e) {
+      if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
+        // The server's own key, not something the client can fix — never surface
+        // key details, and log server-side for the maintainer to notice.
+        console.error("scan: ANTHROPIC_API_KEY rejected:", e);
+        return json({ error: "scanning is temporarily unavailable" }, 500);
+      }
+      if (e instanceof PageExtractionError) {
+        return json({ error: e.message }, 422);
+      }
+      throw e;
+    }
+
+    const result = await importExtractedCards(store, cards, {
+      deck: body.deck ?? "Ukrainian",
+      language: body.language ?? "uk",
+      source: "scan",
+    });
+    return json(result);
+  }
+
+  return json({ error: "not found" }, 404);
+}
+
+Deno.serve(async (req) => {
+  // Gates access only — a scanned note isn't attributed to whoever scanned it.
+  // `notes` is a shared pool (D2), so unlike `/sync` there's no per-user id to
+  // thread through to a store call here.
+  if (!resolveUserId(req)) return json({ error: "unauthorized" }, 401);
+
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey) return json({ error: "scanning is not configured" }, 500);
+
+  try {
+    return await route(req, getStore(), apiKey);
+  } catch (e) {
+    console.error("scan: unhandled error", e);
+    return json({ error: "internal error" }, 500);
+  }
+});

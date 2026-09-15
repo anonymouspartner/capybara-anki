@@ -1,0 +1,80 @@
+/* Shared across every page in web/ (index.html, scan.html) — the AnkiDroid-matched
+ * palette and the toolbar chrome that looks identical wherever it appears.
+ * Page-specific layout (deck list, card, rating row, scan results, …) stays in
+ * each page's own <style> block; this file is only what would otherwise be copied
+ * verbatim into a second <style> block and drift the first time one page's colors
+ * changed and the other's didn't. */
+:root {
+  color-scheme: light dark;
+  --bg-page: #fdfdfd;
+  --bg-toolbar: #f5f5f5;
+  --bg-card: #fdfdfd;
+  --fg: #1b1b1b;
+  --fg-muted: #6b6b6b;
+  --border: #e0e0e0;
+  --stat-new: #3b6ea5;
+  --stat-learning: #c0392b;
+  --stat-review: #1e8e5a;
+  --btn-again: #c0392b;
+  --btn-hard-bg: #ececeb;
+  --btn-hard-fg: #8a6116;
+  --btn-good: #1e8e5a;
+  --btn-easy: #2471a3;
+  --btn-reveal: #3b4a5a;
+  --btn-fg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-page: #17181a;
+    --bg-toolbar: #232428;
+    --bg-card: #1c1d20;
+    --fg: #e8e8ea;
+    --fg-muted: #8b8b90;
+    --border: #35363a;
+    --stat-new: #6ea3e8;
+    --stat-learning: #e0685c;
+    --stat-review: #4fbf8a;
+    --btn-again: #b23a2d;
+    --btn-hard-bg: #2c2d31;
+    --btn-hard-fg: #d9a441;
+    --btn-good: #2e7d4f;
+    --btn-easy: #2e6da4;
+    --btn-reveal: #38424f;
+    --btn-fg: #ffffff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, sans-serif;
+  background: var(--bg-page);
+  color: var(--fg);
+  min-height: 100vh;
+}
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border);
+}
+#toolbar .icon-btn {
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  text-decoration: none;
+  display: inline-block;
+}
+/* `[hidden]` has to win over the `display` set above — a bare `.icon-btn` rule at
+ * this specificity otherwise overrides the `hidden` attribute's own UA-stylesheet
+ * `display: none`, which is exactly what silently broke back-button hiding the
+ * first time this was written (caught by a Playwright screenshot showing "←" on
+ * the deck-list screen where it should never appear). */
+#toolbar .icon-btn[hidden] { display: none; }
+#toolbar h1 { font-size: 17px; margin: 0; font-weight: 600; }
+main { max-width: 480px; margin: 0 auto; padding: 0 16px; }

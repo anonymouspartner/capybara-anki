@@ -4,78 +4,15 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Capybara</title>
+<link rel="stylesheet" href="theme.css" />
 <style>
   /* Palette matches AnkiDroid's own night theme as closely as CSS reasonably
      allows: near-black surfaces at two elevations (toolbar/stats strip a shade
      lighter than the card body), the same new/learning/review color convention
      (blue/red/green), and the same button treatment (Again/Good/Easy solid-filled,
      Hard visually quieter). Light mode is a straight inversion for anyone who
-     isn't in night mode — Anki supports both, so this does too. */
-  :root {
-    color-scheme: light dark;
-    --bg-page: #fdfdfd;
-    --bg-toolbar: #f5f5f5;
-    --bg-card: #fdfdfd;
-    --fg: #1b1b1b;
-    --fg-muted: #6b6b6b;
-    --border: #e0e0e0;
-    --stat-new: #3b6ea5;
-    --stat-learning: #c0392b;
-    --stat-review: #1e8e5a;
-    --btn-again: #c0392b;
-    --btn-hard-bg: #ececeb;
-    --btn-hard-fg: #8a6116;
-    --btn-good: #1e8e5a;
-    --btn-easy: #2471a3;
-    --btn-reveal: #3b4a5a;
-    --btn-fg: #ffffff;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg-page: #17181a;
-      --bg-toolbar: #232428;
-      --bg-card: #1c1d20;
-      --fg: #e8e8ea;
-      --fg-muted: #8b8b90;
-      --border: #35363a;
-      --stat-new: #6ea3e8;
-      --stat-learning: #e0685c;
-      --stat-review: #4fbf8a;
-      --btn-again: #b23a2d;
-      --btn-hard-bg: #2c2d31;
-      --btn-hard-fg: #d9a441;
-      --btn-good: #2e7d4f;
-      --btn-easy: #2e6da4;
-      --btn-reveal: #38424f;
-      --btn-fg: #ffffff;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, system-ui, sans-serif;
-    background: var(--bg-page);
-    color: var(--fg);
-    min-height: 100vh;
-  }
-  #toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 16px;
-    background: var(--bg-toolbar);
-    border-bottom: 1px solid var(--border);
-  }
-  #toolbar .icon-btn {
-    background: none;
-    border: none;
-    color: var(--fg);
-    font-size: 20px;
-    cursor: pointer;
-    padding: 4px 8px;
-    line-height: 1;
-  }
-  #toolbar h1 { font-size: 17px; margin: 0; font-weight: 600; }
+     isn't in night mode — Anki supports both, so this does too. Color tokens and
+     toolbar chrome live in theme.css, shared with scan.html. */
   #stats-strip {
     display: flex;
     gap: 16px;
@@ -96,7 +33,6 @@
   /* A queued-but-not-yet-synced review count (offline, step 3 §6) — deliberately
      not one of the three colors above, since it isn't a due-queue bucket. */
   .pending { color: var(--fg-muted); margin-left: auto; }
-  main { max-width: 480px; margin: 0 auto; padding: 0 16px; }
 
   /* Deck list */
   .deck-row {
@@ -196,7 +132,7 @@
 <div id="toolbar">
   <button id="back-btn" class="icon-btn" hidden>←</button>
   <h1 id="title">Capybara</h1>
-  <span style="width: 28px"></span>
+  <a id="scan-link" class="icon-btn" href="./scan.html" hidden>📷</a>
 </div>
 <div id="stats-strip" hidden></div>
 <main id="content"><div id="loading" style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div></main>

@@ -4,8 +4,17 @@
 // queue app.js reads from), not something to fake via an HTTP cache that could
 // silently serve stale due-queue data as if it were current.
 
-const CACHE_NAME = "capybara-anki-shell-v1";
-const SHELL_FILES = ["/", "/index.html", "/app.js", "/offline.js"];
+const CACHE_NAME = "capybara-anki-shell-v2";
+const SHELL_FILES = [
+  "/",
+  "/index.html",
+  "/app.js",
+  "/offline.js",
+  "/auth.js",
+  "/theme.css",
+  "/scan.html",
+  "/scan.js",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -23,7 +32,10 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/sync")) return; // never intercept API calls
+  // Never intercept API calls — /scan (the Claude call, step 5) needs network as
+  // much as /sync does, and a cache-first match against a POST it never cached
+  // would only paper over that rather than fail honestly.
+  if (url.pathname.startsWith("/sync") || url.pathname.startsWith("/scan")) return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached ?? fetch(event.request)),

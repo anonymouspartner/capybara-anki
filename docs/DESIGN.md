@@ -215,6 +215,47 @@ coverage that already exists. Budget for it; do not pretend it is free.
 One honest regression: browsers cannot decode HEIC, PIL with `pillow-heif` can. Android
 cameras produce JPEG, so this likely never bites — but it is the one capability lost.
 
+**Status: done (step 5).** Built as predicted above, with one real correction: the
+prediction was "the Anthropic TypeScript SDK exposes the same error classes," which
+turned out true for the *errors* (`AuthenticationError`/`RateLimitError`/
+`APIConnectionError`/… — confirmed by fetching and reading `@anthropic-ai/sdk@0.39.0`'s
+actual `error.mjs` export list) but not for the *call shape*: this SDK version's
+`Messages` class has no `.parse()`/structured-output helper the way the Python SDK's
+newer surface does (confirmed the same way — its `messages.mjs` exports only
+`create`/`stream`/`countTokens`). `src/scan/extract.ts` uses forced tool-use instead:
+one JSON-schema tool definition, `tool_choice` forced to it, the response's
+`tool_use` block read as the structured output. Same schema-strictness
+(`additionalProperties: false`, a full `required` list) as the Python side's
+pydantic model, same five failure branches, same truncation check ahead of looking
+at content at all.
+
+`src/scan/import.ts` is D10 made real: `importExtractedCards` turns a page's
+extracted cards straight into `notes` rows via `Store.createNote`, no approval
+step, reusing `validateNoteEdit` (D11's edit-in-place validator, §4.4) rather than
+inventing separate import rules for the same "a card needs something on its front"
+invariant — one bad card from a shaky OCR read is skipped, not fatal to the rest
+of the page.
+
+`supabase/functions/scan/index.ts` is the HTTP surface, same shape and same honest
+gap as `sync/index.ts`: real routing, D13 auth (factored into `src/auth.ts` once
+both edge functions needed the identical bearer-token check), and `createNote`
+left as an explicit `PostgresStore` stub. `web/scan.html`/`scan.js` are D8's other
+half: `createImageBitmap` (which applies EXIF orientation itself) plus a canvas
+resize to the same 1568px edge and 0.85 JPEG quality `claude_parser.py` used,
+entirely client-side, before the photo ever leaves the device.
+
+Verified with Playwright against the demo server (a canned card stands in for the
+real Claude call, which is unit-tested separately against a fake client in
+`src/scan/extract.test.ts`): scan a photo → see it land → go back to the deck list
+→ the deck's new-card count is one higher, proving the imported note is real and
+immediately reviewable, not a display fiction. That run caught two real bugs:
+`web/demo-server.ts`'s routing gate checked a bare `/scan` prefix, which also
+matched the *static files* `/scan.html`/`/scan.js` and 401'd them; and pulling the
+toolbar's shared color tokens into a new `theme.css` (used by both `index.html` and
+`scan.html`) added a `.icon-btn { display: inline-block }` rule whose specificity
+silently beat the `hidden` attribute's own default, so the back button stopped
+disappearing on the deck-list screen. Both fixed and re-verified.
+
 ### 4.2 Why the review log is the sync primitive
 
 The hard case for offline is not "no signal." It is **flaky** signal: half-sent batches,
@@ -697,8 +738,8 @@ the risk survivable.
 | **1** | Schema + review log + FSRS replay, server-side | **Done.** Schema in `supabase/migrations/` (unapplied); replay in `src/fsrs/` (§5.1), tested including the replay-equals-incremental property. |
 | **2** | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place**, decks, interval previews | **Done.** Logic in `src/review/` (§5.2, 42 tests), HTTP surface in `supabase/functions/sync/` (routing + auth complete, `PostgresStore` not yet — needs a live project), UI in `web/` redesigned to match real AnkiDroid's night theme (verified end-to-end with Playwright against a local demo server). Not deployed. |
 | **3** | Offline: service worker, IndexedDB, queued reviews | **Done.** `web/sw.js` + `web/offline.js` (§6.2), verified with Playwright: an offline answer queues and shows a pending count, a reconnect flushes it, and a full page reload while offline still renders the cached deck list. Turns it into something that replaces AnkiDroid rather than supplements it. |
-| 4 | Real migration, run for real | Now there is somewhere for the data to land. |
-| 5 | Scanner: camera, canvas resize, `/scan` edge function | Deletes the export/import tax (§1.2). |
+| 4 | Real migration, run for real | Blocked on a live Supabase project with this schema applied — Claude never deploys or touches Supabase without an explicit, in-the-moment request (capybara-bot's CLAUDE.md, this repo's own ground rules), so this waits for the maintainer. |
+| **5** | Scanner: camera, canvas resize, `/scan` edge function | **Done.** `src/scan/` (extract + import, §4.1, 13 tests), `supabase/functions/scan/`, `web/scan.html`/`scan.js`, verified end-to-end with Playwright against the demo server. Deletes the export/import tax (§1.2). |
 | 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. |
 
 Step 0 was the whole point of doing this first: a day of work that either de-risks the

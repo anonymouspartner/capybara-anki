@@ -13,9 +13,10 @@
 // vocabulary schema, which nothing here has confirmed yet. Showing empty rows for
 // decks this app can't actually review would be worse than not showing them.
 //
-// Auth (D13, §4.5): install is opening one link, `#t=<token>`. Read the fragment,
-// store the token, strip it from the visible URL and history so it never lingers
-// there or gets shared by accident — then send it as a bearer token on every call.
+// Auth (D13, §4.5): install is opening one link, `#t=<token>`. `auth.js` (shared
+// with scan.js) reads the fragment, stores the token, and strips it from the
+// visible URL and history so it never lingers there or gets shared by accident —
+// this file just sends it as a bearer token on every call.
 //
 // Offline (step 3, §6): `offline.js` is the IndexedDB-backed review queue and
 // response cache; `api()` below is the one place that decides when to fall back to
@@ -23,22 +24,7 @@
 // offline-safe automatically rather than each needing its own try/catch.
 
 import * as offline from "./offline.js";
-
-const TOKEN_KEY = "capybara-anki-token";
-
-function captureTokenFromUrl() {
-  // location.hash includes the leading "#" itself (e.g. "#t=abc"), which
-  // URLSearchParams doesn't expect — strip it before parsing, not after.
-  const params = new URLSearchParams(location.hash.slice(1));
-  const token = params.get("t");
-  if (!token) return;
-  localStorage.setItem(TOKEN_KEY, token);
-  history.replaceState(null, "", location.pathname + location.search);
-}
-
-function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
-}
+import { captureTokenFromUrl, getToken } from "./auth.js";
 
 async function api(path, options = {}) {
   const token = getToken();
@@ -81,6 +67,7 @@ async function api(path, options = {}) {
 const contentEl = document.getElementById("content");
 const titleEl = document.getElementById("title");
 const backBtn = document.getElementById("back-btn");
+const scanLink = document.getElementById("scan-link");
 const statsStrip = document.getElementById("stats-strip");
 
 const state = {
@@ -126,6 +113,7 @@ backBtn.addEventListener("click", showDeckList);
 async function showDeckList() {
   state.view = "decks";
   backBtn.hidden = true;
+  scanLink.hidden = false;
   titleEl.textContent = "Capybara";
   statsStrip.hidden = true;
 
@@ -175,6 +163,7 @@ async function enterDeck(deck) {
   state.revealed = false;
   state.editing = false;
   backBtn.hidden = false;
+  scanLink.hidden = true;
   titleEl.textContent = deck;
 
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;
