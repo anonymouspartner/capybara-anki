@@ -27,7 +27,10 @@ jobs:
           deno-version: v2.x
 
       - name: Type-check
-        run: deno check src/fsrs/*.ts
+        # The edge function is checked but never run here — Deno.serve() at its
+        # top level would bind a port on import, which is exactly why it's outside
+        # src/ and outside this job's test glob below.
+        run: deno check src/fsrs/*.ts src/review/*.ts supabase/functions/sync/index.ts web/demo-server.ts
 
       - name: Run tests
         run: deno test --allow-read --allow-env src/

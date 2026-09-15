@@ -396,6 +396,51 @@ Suspending a card is a UI action (D12), not something any rating history determi
 so replay never touches it; a caller merges the fold's output with whatever
 `suspended` already is.
 
+### 5.2 `src/review/` — the reviewer's server-side logic, step 2
+
+Built and tested (`src/review/*.test.ts`, 20 tests) ahead of any UI, same order as
+every other step in this build: get the logic right and verified first, wire a
+surface onto it second. `web/` (below) is that surface.
+
+**One real schema consequence, found while implementing suspend rather than
+predicted in advance:** `card_state` can exist with every FSRS field null. §4.3
+frames `card_state` as "a fold over reviews," which is true of the FSRS-derived
+columns — but `suspended` isn't derived from reviews at all (§5.1), and a card can
+be suspended *before* its first review, which means a row must be able to exist for
+that purpose alone. `mergeCardState` (`mutations.ts`) is what makes this safe:
+every action patches only the fields it has an opinion about, so a review after a
+pre-emptive suspend doesn't invent stability out of nothing, and a suspend after a
+real review doesn't touch the FSRS state already there.
+
+**The due-queue order is a stated policy decision, not a port of Anki's own
+algorithm** (`dueQueue.ts`'s docstring has the details): learning/relearning cards
+due now, then review cards oldest-due-first, then new cards up to the day's
+remaining allowance — each respecting `suspended` and "due now" but with no
+attempt to reproduce Anki's v3 scheduler's gather/interleave settings. Deliberately
+simple, and changeable later without touching the data model, since it only reads
+already-public row shapes.
+
+**`supabase/functions/sync/index.ts`** is the HTTP surface: `GET /sync/due`,
+`POST /sync/review`, `POST /sync/suspend`, `PATCH`/`DELETE /sync/note/:id`. It is
+real, complete routing and D13 bearer-token auth — and an explicitly unimplemented
+`PostgresStore`. Every other external boundary in this build (the Anki reader, the
+FSRS replay) was written against something concrete enough to test and had at least
+one real assumption corrected by doing so (§7.5, this section's own finding above).
+A `PostgresStore` written with no live project to run it against would skip that
+step entirely; it's better written once, against a real project, than guessed at
+twice.
+
+**`web/`** is the reviewer UI — plain HTML/JS, no build step, since every bit of
+scheduling logic lives server-side and the browser's whole job is fetch → render →
+post an answer → next card. Verified by actually running it: `web/demo-server.ts`
+serves the same JSON shapes `/sync` would, backed by `InMemoryStore` and three
+placeholder vocabulary notes (never real corpus content), and a full click-through
+— reveal, rate, advance, edit, save, suspend — was driven with Playwright rather
+than left as "should work." That run caught one real bug: `location.hash` includes
+its leading `#`, which the token-capture code's `URLSearchParams` call didn't
+account for, so a fresh install link never actually stored its token. Fixed and
+re-verified.
+
 ---
 
 ## 6. Offline behaviour
@@ -569,7 +614,7 @@ the risk survivable.
 |---|---|---|
 | **0** | Migration spike — read an export, print a report | **Done, verified against a real export (§7.5).** |
 | **1** | Schema + review log + FSRS replay, server-side | **Done.** Schema in `supabase/migrations/` (unapplied); replay in `src/fsrs/` (§5.1), tested including the replay-equals-incremental property. |
-| 2 | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place** | The daily loop. Usable at this point, online-only. |
+| **2** | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place** | **Done.** Logic in `src/review/` (§5.2, 20 tests), HTTP surface in `supabase/functions/sync/` (routing + auth complete, `PostgresStore` not yet — needs a live project), UI in `web/` (verified end-to-end with Playwright against a local demo server). Not deployed. |
 | 3 | Offline: service worker, IndexedDB, queued reviews | Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Now there is somewhere for the data to land. |
 | 5 | Scanner: camera, canvas resize, `/scan` edge function | Deletes the export/import tax (§1.2). |

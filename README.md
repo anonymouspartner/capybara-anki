@@ -4,10 +4,11 @@ A self-owned spaced-repetition app for one couple learning each other's language
 offline reviewer, page scanner, and pronunciation practice, backed by the same
 Postgres the Capybara Telegram bot already writes to.
 
-**Steps 0 and 1 are built** (migration, verified against a real export; schema and
-FSRS replay). Nothing user-facing exists yet — no reviewer, no deploy. Read
-[`docs/DESIGN.md`](docs/DESIGN.md) first; it is the plan of record and explains why
-this exists at all.
+**Steps 0-2 are built**: migration verified against a real export, schema + FSRS
+replay, and a working reviewer (due queue, four buttons, suspend, edit-in-place) —
+verified end to end with Playwright against a local demo server, not deployed
+anywhere. Read [`docs/DESIGN.md`](docs/DESIGN.md) first; it is the plan of record
+and explains why this exists at all.
 
 ---
 
@@ -55,7 +56,7 @@ Inherited from `capybara-bot`, and they apply here too:
 |---|---|
 | 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
-| 2 · Reviewer | not started |
+| 2 · Reviewer | **done** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) |
 | 3 · Offline | not started |
 | 4 · Real migration | not started |
 | 5 · Scanner | not started |
@@ -101,3 +102,31 @@ time from it, and — confirmed directly against the library — ignores whateve
 `elapsed_days`/`scheduled_days` a resumed card carries. Real Anki independently
 agrees: a card's own memory-state JSON carries the equivalent (`lrt`), found while
 reading a real export during the migration spike.
+
+## The reviewer
+
+`src/review/` — due-queue selection (`dueQueue.ts`), the four D12 actions as pure
+state transitions (`mutations.ts`), and the HTTP-shaped operations that wrap them
+over a storage interface (`handlers.ts`, `store.ts`). 20 tests, all against
+`InMemoryStore` — same reasoning as everywhere else in this repo: a `PostgresStore`
+untested against a live project would be guessed code, so it isn't written yet
+(see `supabase/functions/sync/index.ts`'s own comment on this).
+
+`supabase/functions/sync/` is the real edge function shape — routing and D13
+bearer-token auth complete, **not deployed, not deployable yet** (`PostgresStore`
+is a stub). `web/` is the reviewer UI itself: plain HTML/JS, no build step, since
+every scheduling decision happens server-side and the browser's job is just
+fetch → render → post an answer → next card.
+
+Verified by running it, not just asserting it works:
+
+```bash
+deno run --allow-net --allow-read web/demo-server.ts
+# open the printed URL — it's a local demo backed by three placeholder notes,
+# never real corpus content, exercising the same handlers.ts the real app uses
+```
+
+A full click-through (reveal → rate → advance → edit → save → suspend) was driven
+with Playwright against that server. It caught one real bug on the first run:
+`location.hash` includes its own leading `#`, which the token-capture code didn't
+account for, so a fresh install link never actually stored its token. Fixed.
