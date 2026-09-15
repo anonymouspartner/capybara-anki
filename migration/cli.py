@@ -32,18 +32,15 @@ from migration.transform import compute_elapsed_days, transform_card_state, tran
 
 
 def run_migration(export_path: Path, user_id: str, deck_prefix: str = "Capybara::") -> MigrationResult:
-    conn, collection_format = open_collection(export_path)
-    try:
-        crt = get_collection_created_at(conn)
-        note_types = get_note_types(conn)
-        raw_notes = get_notes(conn)
-        raw_cards = get_cards(conn)
-        raw_revlog = get_revlog(conn)
+    with open_collection(export_path) as (col, collection_format):
+        crt = get_collection_created_at(col)
+        note_types = get_note_types(col)
+        raw_notes = get_notes(col)
+        raw_cards = get_cards(col)
+        raw_revlog = get_revlog(col)
         scheduler_config, config_warnings = extract_scheduler_config(
-            conn=conn, user_id=user_id, deck_name_prefix=deck_prefix
+            col=col, user_id=user_id, deck_name_prefix=deck_prefix
         )
-    finally:
-        conn.close()
 
     warnings: list[str] = []
     skipped_note_count = 0

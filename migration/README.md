@@ -5,6 +5,11 @@ answers one question before anything else gets built — **can this collection a
 be read, and does it carry the FSRS memory state and scheduler config the switch
 depends on feeling like nothing changed (§7.3)?**
 
+**Verified against a real AnkiDroid export, 2026-09-15: yes.** 1094 vocabulary notes,
+4504 reviews, three months of history, read cleanly. See `docs/DESIGN.md` §7.5 for
+the five real gaps between the original design and the actual file that this run
+found and fixed — nothing here is theoretical anymore.
+
 It never writes to Postgres, and it never will — see `__init__.py`. It emits plain
 JSON files under `--out` and prints a human-readable report. The real migration, once
 this shape is trusted, is a different (later) piece of work.
@@ -15,9 +20,15 @@ this shape is trusted, is a different (later) piece of work.
 pip install -r migration/requirements.txt
 ```
 
-The only real dependency is `zstandard`, for decompressing `collection.anki21b` —
-modern Anki exports compress the collection database; see `reader.py`'s docstring.
-Everything else is Python stdlib.
+Two real dependencies: `zstandard`, for decompressing `collection.anki21b` — modern
+Anki exports compress the collection database (see `reader.py`'s docstring) — and
+`anki`, the actual Anki library. That second one is heavier than a typical CLI
+dependency, and it's there on purpose: a real collection's deck options are a
+genuine protobuf message, not JSON, and Anki's own library is the one thing
+guaranteed not to drift from Anki's own schema as it keeps changing. See
+`reader.py`'s docstring for the full story. This stays fine because `migration/`
+never becomes a hosted service (D7) — the dependency costs nothing in production
+because there is no production copy of this code.
 
 ## Getting an export off the phone
 
@@ -55,19 +66,24 @@ The report is the point — read it before trusting the JSON:
 
 - **`with FSRS state: N / M`** — if this is well below the card count, FSRS memory
   state isn't where `config.py`/`transform.py` expect it, and the switch would not
-  feel like nothing changed (§7.3). Check `warnings.txt` for which cards and why.
+  feel like nothing changed (§7.3). Check `warnings.txt` for which cards and why. On
+  the real collection this read 1034/1094 — the remainder are new/unreviewed cards,
+  which is expected, not a gap.
 - **`scheduler config` block** — each of the five settings shows *which key* supplied
   it, or `NOT FOUND`. `NOT FOUND` doesn't mean the setting doesn't exist in the
   collection — it means Anki's internal key name for it doesn't match what this tool
-  currently looks for (see `config.py`'s docstring). That's expected to need a fix
-  once a real export is in hand; it is not a sign the whole approach is broken.
+  currently looks for (see `config.py`'s docstring). If this fires on a future
+  export, it means Anki renamed something again since 2026-09-15, not that the whole
+  approach is broken — `config.py`'s candidate-key list is exactly the thing to
+  extend.
+- **An empty `fsrs_params` list** is a real, meaningful value on the real collection
+  — Anki's convention for "FSRS is on, but Optimize has never been run," not a
+  missing key. The report says so; don't read it as a failure.
 - **`warnings.txt`** — every place a value was skipped or guessed, in plain language,
-  with enough detail (a note id, a card id, a key name) to go looking.
-
-If the FSRS state and scheduler config both come through clean, the hardest unknown in
-`docs/DESIGN.md` (§7.1) is retired and step 1 (schema + review-log replay) can start.
-If they don't, `config.py` and `transform.py` are the two files to fix — both were
-written defensively for exactly this: report the mismatch loudly, guess nothing.
+  with enough detail (a note id, a card id, a key name) to go looking. On the real
+  export, all 449 warnings break down as 204 pronunciation-practice notes correctly
+  excluded, 244 "this note has two cards" notices (a real feature of the collection,
+  see `docs/DESIGN.md` §7.5 finding 5, not a bug), and one FSRS-defaults notice.
 
 ## Tests
 
@@ -76,9 +92,18 @@ pip install -r migration/requirements-dev.txt
 python -m pytest migration/tests -v
 ```
 
-Every test runs against a synthetic collection built in `migration/tests/fixtures.py`
-— never a real export. The suite covers both container formats reader.py has to
-handle (plain and zstd-compressed), the note-type/field-order validation that stands
-between a real card and a silently mis-mapped one, idempotency across repeated runs
-(§7.2 — migration is re-run at least twice, per D15), and the "Anki renamed a config
-key" case that `config.py`'s candidate-key search exists for.
+Every test runs against a synthetic collection — never a real export. The fixture
+builder (`migration/tests/fixtures.py`) builds those collections with the real `anki`
+library rather than hand-written SQL, precisely because hand-written SQL is exactly
+what let the original schema assumptions drift from reality undetected (see
+`docs/DESIGN.md` §7.5) — a fixture built by the same library this package reads with
+can't independently drift from what that library actually produces.
+
+The suite covers both container formats `reader.py` has to handle (plain and
+zstd-compressed, with the real no-content-size-header framing), the note-type
+recognition that stands between a real card and a silently mis-mapped or
+silently-dropped one (by field signature, not name — two real note-type names share
+one schema), idempotency across repeated runs (§7.2 — migration is re-run at least
+twice, per D15), the "Anki renamed a config key" case, and the "one config key is an
+untouched empty placeholder while another candidate holds real data" case that a real
+export actually hit during this verification.

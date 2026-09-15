@@ -29,18 +29,28 @@ from migration.schema import CardState, Note, Review
 # uuid5 namespace, fixed so re-runs (and re-runs on a different machine) agree.
 _NAMESPACE = uuid.UUID("f4c4b8b0-9d3a-4c1e-8b1d-6c6a1a1c5c1a")
 
-# The Capybara note type's field order — anki_package.py's APKG_FIELDS in the
-# scanner repo. Any note type with a different name or field set is skipped, not
-# guessed at: see `skip_reason` on the per-note result.
-EXPECTED_NOTE_TYPE_NAME = "Capybara"
+# The Capybara vocabulary schema's field order. Verified against a real export,
+# 2026-09-15 — and it does NOT match anki_package.py's APKG_FIELDS in the scanner
+# repo, which lists lemma_translation third. The live collection has it last. Ground
+# truth from the real file wins; a mismatch here would have silently rejected every
+# real note (as happened on the first run against this export, before the fix).
+#
+# Also verified: the real collection has TWO note-type names carrying this exact
+# field set — "Capybara" (850 notes) and "Capybara+" (244 notes), the "+" apparently
+# an Anki-side clone from some past sync/edit. Matching by NAME would have skipped
+# whichever one wasn't hardcoded. So recognition here is by field SIGNATURE, not
+# name — any note type whose fields equal EXPECTED_FIELDS is accepted, whatever it's
+# called. This still correctly excludes "Capybara Pronunciation (shadowing)" (204
+# notes, a completely different field set: TargetText/ReferenceAudio/Translation/...)
+# without needing to know its name either.
 EXPECTED_FIELDS = [
     "lemma",
     "gloss",
-    "lemma_translation",
     "part_of_speech",
     "language",
     "example",
     "example_translation",
+    "lemma_translation",
 ]
 
 # A learning-card `due` value this large can only be a Unix timestamp (seconds), not
@@ -62,15 +72,16 @@ def transform_note(
     raw: RawNote, note_type: NoteType | None
 ) -> tuple[Note | None, str | None]:
     """Returns (Note, None) on success, or (None, skip_reason) if this note isn't a
-    recognizable Capybara note and shouldn't be guessed at."""
+    recognizable Capybara vocabulary note and shouldn't be guessed at. Recognition is
+    by field signature, not note-type name — see the module-level comment above
+    EXPECTED_FIELDS for why."""
     if note_type is None:
         return None, f"note {raw.id}: unknown note type id {raw.mid}"
-    if note_type.name != EXPECTED_NOTE_TYPE_NAME:
-        return None, f"note {raw.id}: note type is '{note_type.name}', not 'Capybara'"
     if note_type.field_names != EXPECTED_FIELDS:
         return None, (
-            f"note {raw.id}: 'Capybara' note type's fields don't match what the "
-            f"scanner writes — expected {EXPECTED_FIELDS}, found {note_type.field_names}"
+            f"note {raw.id}: note type '{note_type.name}' fields don't match the "
+            f"Capybara vocabulary schema — expected {EXPECTED_FIELDS}, "
+            f"found {note_type.field_names}"
         )
     if len(raw.fields) != len(EXPECTED_FIELDS):
         return None, (

@@ -1,28 +1,36 @@
 """Best-effort extraction of the five settings docs/DESIGN.md §7.3 says matter.
 
-"Perfect card data with wrong limits will feel wrong" — so this module's job is not to
-guess. For each of the five settings it tries a short list of key names Anki has used
-across versions (they have moved: `fsrsWeights` → `fsrsParams4` → `fsrsParams5` as the
-parameter count changed release to release), takes the first one present, and records
-*which* key path supplied it in `SchedulerConfig.source_keys`. If nothing matches, the
-field stays `None` and the report says so — never a silent default.
+"Perfect card data with wrong limits will feel wrong" — so this module's job is not
+to guess. For each of the five settings it tries a short list of key names Anki has
+used across versions (they have moved: `fsrsWeights` → `fsrsParams5` → `fsrsParams6`
+as the parameter count changed release to release), takes the first one present, and
+records *which* key path supplied it in `SchedulerConfig.source_keys`. If nothing
+matches, the field stays `None` and the report says so — never a silent default.
 
-This is the one module in the whole migration spike most likely to need a rewrite once
-a real export lands, precisely because it is guessing at schema key names rather than
-reading a spec. That is expected and is what §7.1 already flags.
+Split into two layers, verified against a real export, 2026-09-15:
+
+- `extract_scheduler_config_from_dict` is pure: given a plain dict shaped like the
+  one Anki's own `Collection.decks.config_dict_for_deck_id()` returns, it does the
+  candidate-key search. No collection needed to test this half at all.
+- `find_capybara_deck_config` gets that dict in the first place, via the Collection
+  API rather than the `col.dconf` JSON blob this module originally read — that blob
+  is a genuine protobuf message in a modern collection (real bytes, not JSON; see
+  reader.py's docstring), and hand-decoding a protobuf message without its .proto
+  schema is exactly the kind of thing that silently breaks on the next Anki release.
+  Anki's own library is the one thing that keeps decoding it correctly.
 """
 
 from __future__ import annotations
 
-import json
-import sqlite3
+from anki.collection import Collection
 
 from migration.schema import SchedulerConfig
 
-# Tried in order; first key present wins. Each entry is a dotted path into the
-# deck-config-group JSON object (the "dconf" entry Anki uses for a preset).
-_FSRS_PARAMS_KEYS = ["fsrsParams5", "fsrsParams4", "fsrsWeights", "fsrs.w"]
-_DESIRED_RETENTION_KEYS = ["desiredRetention", "fsrs.desiredRetention"]
+# Tried in order; first key present wins. Anki's own decoded dict uses these names
+# directly — no dotted-path digging into nested JSON is needed for the top-level
+# ones anymore, but new/rev limits are still nested one level under "new"/"rev".
+_FSRS_PARAMS_KEYS = ["fsrsParams6", "fsrsParams5", "fsrsParams4", "fsrsWeights"]
+_DESIRED_RETENTION_KEYS = ["desiredRetention"]
 _LEARNING_STEPS_KEYS = ["new.delays"]
 _DAILY_NEW_LIMIT_KEYS = ["new.perDay"]
 _DAILY_REVIEW_LIMIT_KEYS = ["rev.perDay"]
@@ -30,7 +38,7 @@ _MAX_INTERVAL_KEYS = ["rev.maxIvl"]
 
 
 def _dig(obj: dict, dotted_path: str):
-    """Walk `dotted_path` ("fsrs.w") through nested dicts. Returns None on any miss."""
+    """Walk `dotted_path` ("new.delays") through nested dicts. None on any miss."""
     cur = obj
     for part in dotted_path.split("."):
         if not isinstance(cur, dict) or part not in cur:
@@ -40,110 +48,126 @@ def _dig(obj: dict, dotted_path: str):
 
 
 def _first_match(obj: dict, candidate_paths: list[str]) -> tuple[str | None, object]:
+    """Two passes, deliberately. `_FSRS_PARAMS_KEYS` lists more than one candidate
+    (Anki has carried "fsrsParams5" and "fsrsParams6" side by side while migrating
+    between them), and a real collection can have BOTH present with one populated
+    and the other still an untouched empty list. An empty list is a real, meaningful
+    value on its own (Anki's convention for "no personalized weights yet" — see
+    extract_scheduler_config_from_dict), so a naive first-non-None search would
+    latch onto whichever empty placeholder sorts first in the candidate list and
+    never look further, even with real data sitting one candidate down. Preferring
+    any truthy match first — falling back to the first present-but-falsy one only
+    if every candidate is empty — gets both right: real data wins when it exists,
+    and "empty on purpose" is still reported accurately when that's genuinely all
+    there is.
+    """
+    first_present: tuple[str, object] | None = None
     for path in candidate_paths:
         value = _dig(obj, path)
-        if value is not None:
+        if value is None:
+            continue
+        if first_present is None:
+            first_present = (path, value)
+        if value:  # truthy: real data, not just "the key exists"
             return path, value
-    return None, None
+    return first_present if first_present is not None else (None, None)
 
 
-def find_capybara_deck_config(
-    conn: sqlite3.Connection, deck_name_prefix: str = "Capybara::"
-) -> tuple[dict | None, list[str]]:
-    """Locates the deck-options preset actually used by the Capybara decks.
-
-    Returns (dconf_entry, warnings). dconf_entry is the raw JSON object for the
-    matched preset, or None if no Capybara deck — or no matching preset — was found,
-    in which case the caller falls back to reporting on whatever exists so the run is
-    still informative rather than a hard failure.
-    """
-    warnings: list[str] = []
-    row = conn.execute("select decks, dconf from col").fetchone()
-    if row is None:
-        return None, ["col table has no rows — cannot locate deck configuration at all."]
-
-    try:
-        decks = json.loads(row["decks"])
-        dconf = json.loads(row["dconf"])
-    except (json.JSONDecodeError, TypeError) as e:
-        return None, [f"col.decks / col.dconf did not parse as JSON: {e}"]
-
-    capybara_decks = {
-        did: d for did, d in decks.items() if d.get("name", "").startswith(deck_name_prefix)
-    }
-    if not capybara_decks:
-        names = sorted(d.get("name", "?") for d in decks.values())
-        return None, [
-            f"No deck named '{deck_name_prefix}*' found. Decks present: {names}. "
-            "Falling back to reporting every config preset in the collection."
-        ]
-
-    conf_ids = {d.get("conf") for d in capybara_decks.values()}
-    conf_ids.discard(None)
-    if len(conf_ids) > 1:
-        warnings.append(
-            f"Capybara decks use {len(conf_ids)} different option presets "
-            f"({sorted(conf_ids)}), not one shared preset. Using the first; the "
-            "daily-limit and retention numbers may differ per deck in reality — "
-            "check dconf manually before trusting this."
-        )
-    if not conf_ids:
-        return None, warnings + ["Capybara decks have no 'conf' preset id set."]
-
-    chosen_id = str(sorted(conf_ids)[0])
-    entry = dconf.get(chosen_id)
-    if entry is None:
-        return None, warnings + [
-            f"Capybara decks point at preset id {chosen_id}, which is not in dconf. "
-            f"Presets present: {sorted(dconf.keys())}."
-        ]
-    return entry, warnings
-
-
-def extract_scheduler_config(
-    conn: sqlite3.Connection, user_id: str, deck_name_prefix: str = "Capybara::"
+def extract_scheduler_config_from_dict(
+    raw_config: dict | None, user_id: str
 ) -> tuple[SchedulerConfig, list[str]]:
-    """Best-effort. Never raises — every failure mode becomes a warning + None field."""
+    """Pure — no collection, no I/O. `raw_config` is the dict a deck's resolved
+    options look like (Anki's own shape, or None if no config could be located at
+    all, in which case every field stays None)."""
     result = SchedulerConfig(user_id=user_id)
     warnings: list[str] = []
 
-    dconf_entry, deck_warnings = find_capybara_deck_config(conn, deck_name_prefix)
-    warnings.extend(deck_warnings)
-
-    if dconf_entry is None:
-        row = conn.execute("select dconf from col").fetchone()
-        if row is not None:
-            try:
-                all_dconf = json.loads(row["dconf"])
-                if all_dconf:
-                    # Fall back to *a* preset so the run still produces numbers to
-                    # sanity-check by eye, clearly labelled as a guess in the report.
-                    first_id, dconf_entry = next(iter(all_dconf.items()))
-                    warnings.append(
-                        f"Using preset id {first_id} as a fallback guess — verify "
-                        "this is actually the Capybara decks' preset."
-                    )
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    if dconf_entry is not None:
-        for field_name, candidates in (
-            ("fsrs_params", _FSRS_PARAMS_KEYS),
-            ("desired_retention", _DESIRED_RETENTION_KEYS),
-            ("learning_steps", _LEARNING_STEPS_KEYS),
-            ("daily_new_limit", _DAILY_NEW_LIMIT_KEYS),
-            ("daily_review_limit", _DAILY_REVIEW_LIMIT_KEYS),
-            ("max_interval", _MAX_INTERVAL_KEYS),
+    if raw_config is None:
+        for field_name in (
+            "fsrs_params", "desired_retention", "learning_steps",
+            "daily_new_limit", "daily_review_limit", "max_interval",
         ):
-            matched_path, value = _first_match(dconf_entry, candidates)
-            if matched_path is None:
-                result.source_keys[field_name] = "NOT FOUND"
-                warnings.append(
-                    f"{field_name}: none of {candidates} present in the matched "
-                    "preset. Left as None rather than guessed."
-                )
-            else:
-                setattr(result, field_name, value)
-                result.source_keys[field_name] = matched_path
+            result.source_keys[field_name] = "NOT FOUND"
+        return result, ["no deck config available to extract from"]
+
+    for field_name, candidates in (
+        ("fsrs_params", _FSRS_PARAMS_KEYS),
+        ("desired_retention", _DESIRED_RETENTION_KEYS),
+        ("learning_steps", _LEARNING_STEPS_KEYS),
+        ("daily_new_limit", _DAILY_NEW_LIMIT_KEYS),
+        ("daily_review_limit", _DAILY_REVIEW_LIMIT_KEYS),
+        ("max_interval", _MAX_INTERVAL_KEYS),
+    ):
+        matched_path, value = _first_match(raw_config, candidates)
+        if matched_path is None:
+            result.source_keys[field_name] = "NOT FOUND"
+            warnings.append(
+                f"{field_name}: none of {candidates} present in the resolved "
+                "config. Left as None rather than guessed."
+            )
+        else:
+            setattr(result, field_name, value)
+            result.source_keys[field_name] = matched_path
+
+    if result.fsrs_params == []:
+        warnings.append(
+            "fsrs_params is an empty list — Anki's own convention for \"FSRS is on "
+            "but no personalized weights have been computed yet (never run "
+            "Optimize)\", not a missing value. The app will need to fall back to "
+            "Anki's built-in default FSRS weights rather than porting a real one."
+        )
 
     return result, warnings
+
+
+def find_capybara_deck_config(
+    col: Collection, deck_name_prefix: str = "Capybara::"
+) -> tuple[dict | None, list[str]]:
+    """Locates the deck-options preset actually used by the Capybara decks.
+
+    Returns (config_dict, warnings). config_dict is the dict
+    `col.decks.config_dict_for_deck_id()` returns for the matched preset, or None if
+    no Capybara deck was found, in which case the caller falls back to reporting on
+    whatever exists so the run is still informative rather than a hard failure.
+    """
+    warnings: list[str] = []
+    capybara_decks = [
+        d for d in col.decks.all_names_and_ids() if d.name.startswith(deck_name_prefix)
+    ]
+    if not capybara_decks:
+        all_names = sorted(d.name for d in col.decks.all_names_and_ids())
+        warnings.append(
+            f"No deck named '{deck_name_prefix}*' found. Decks present: {all_names}. "
+            "Falling back to reporting the first config preset in the collection."
+        )
+        all_config = col.decks.all_config()
+        if all_config:
+            return all_config[0], warnings + [
+                f"Using preset id {all_config[0].get('id')} as a fallback guess — "
+                "verify this is actually the Capybara decks' preset."
+            ]
+        return None, warnings + ["No deck-config presets exist in this collection at all."]
+
+    configs_by_id: dict[int, dict] = {}
+    for deck in capybara_decks:
+        cfg = col.decks.config_dict_for_deck_id(deck.id)
+        configs_by_id[cfg["id"]] = cfg
+
+    if len(configs_by_id) > 1:
+        warnings.append(
+            f"Capybara decks use {len(configs_by_id)} different option presets "
+            f"({sorted(configs_by_id.keys())}), not one shared preset. Using the "
+            "lowest id; the daily-limit and retention numbers may differ per deck "
+            "in reality — check deck options manually before trusting this."
+        )
+
+    chosen_id = sorted(configs_by_id.keys())[0]
+    return configs_by_id[chosen_id], warnings
+
+
+def extract_scheduler_config(
+    col: Collection, user_id: str, deck_name_prefix: str = "Capybara::"
+) -> tuple[SchedulerConfig, list[str]]:
+    raw_config, deck_warnings = find_capybara_deck_config(col, deck_name_prefix)
+    result, extract_warnings = extract_scheduler_config_from_dict(raw_config, user_id)
+    return result, deck_warnings + extract_warnings

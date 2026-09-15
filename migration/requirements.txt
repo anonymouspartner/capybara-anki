@@ -1,5 +1,13 @@
-# Only real dependency: decompressing collection.anki21b, the zstd-compressed
-# collection database modern Anki exports carry. Everything else in migration/ is
-# stdlib (sqlite3, zipfile, json, dataclasses, uuid, datetime, argparse) — see
-# docs/DESIGN.md D7: this stays a plain local script, never a hosted service.
+# zstandard: decompresses collection.anki21b, the zstd-compressed collection database
+# modern Anki exports carry.
+#
+# anki: the actual Anki library (Rust core + Python bindings), used as the ONE
+# authoritative decoder for anything not a plain SQL table — note-type field lists,
+# and especially deck options, which are a genuine protobuf message in a modern
+# collection (verified against a real export, 2026-09-15; there's no JSON fallback).
+# Hand-decoding that without Anki's own .proto schema would silently drift the next
+# time Anki adds a field. This stays a local dependency only — see docs/DESIGN.md D7
+# and reader.py's docstring: migration/ never becomes a hosted service, so a heavier
+# dependency here costs nothing in production.
 zstandard>=0.22
+anki>=25

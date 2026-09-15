@@ -1,27 +1,49 @@
-"""Open an Anki collection export and hand back a plain sqlite3 connection.
+"""Open an Anki collection export as a real `anki.collection.Collection`.
 
-The one real unknown flagged in docs/DESIGN.md §7.1: a modern collection export
-(`.colpkg`, and `.apkg` since Anki 2.1.50-ish) is a zip whose collection database is
-**zstd-compressed** (`collection.anki21b`), not the plain SQLite this repo's other test
-suite already reads out of a genanki-built `.apkg` (`collection.anki2` / `collection.anki21`).
-Anki's own "support older Anki versions" export checkbox produces the plain form.
+Two things verified against a real AnkiDroid export, 2026-09-15, that changed this
+module from its first draft:
 
-Rather than assume which one a given file is, this tries all three names Anki has used,
-in newest-first order, and decompresses only if the name says it needs it. If none is
-present the error message lists exactly what *was* in the zip — the fastest way to find
-out the assumption above was wrong.
+1. **Container format** — the container-name guess in the original design (§7.1) was
+   right first try: a modern export is a zip holding `collection.anki21b`, a
+   zstd-compressed SQLite database. What *wasn't* right: Anki writes that zstd frame
+   without an embedded content-size header (a streaming compress, not a one-shot with
+   a known length), so a one-shot decompress fails with "could not determine content
+   size in frame header" on a real file despite passing every test against a
+   synthetic one. `_decompress_if_needed` uses a streaming reader instead.
+
+2. **What's inside the SQLite file** — this is the bigger finding. This export is
+   Anki's post-Rust-rewrite schema (`col.ver` 18): note-type definitions, deck
+   definitions, and deck *options* have all moved out of the JSON blobs this package
+   originally read (`col.models` / `col.decks` / `col.dconf` — all **empty strings**
+   in a real file) into dedicated tables (`notetypes`, `fields`, `decks`,
+   `deck_config`). Deck options in particular are stored as a **protobuf blob**, not
+   JSON — there's no path around decoding that by hand that doesn't silently break
+   the next time Anki adds a field. So this module hands back Anki's own
+   `anki.collection.Collection`, opened against a throwaway copy, rather than a bare
+   `sqlite3.Connection`: it's the one thing guaranteed to keep decoding correctly as
+   Anki's on-disk format keeps changing, because it *is* the schema owner. Plain
+   tables (notes, cards, revlog) are still read via `col.db.all(...)` — see
+   extract.py — since those are unaffected either way.
+
+Always a **copy**. This package never writes to a collection (see __init__.py), and
+opening the genuine article with Anki's own library — which can and does perform
+schema upgrades on open — is exactly the operation that rule exists to prevent. The
+copy lives in its own throwaway temp directory for the duration of the `with` block
+and is removed unconditionally on exit.
 """
 
 from __future__ import annotations
 
-import sqlite3
+import contextlib
+import io
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from urllib.parse import quote
 
-# Newest first. Only "anki21b" is zstd-compressed; the other two are plain SQLite
-# that sqlite3 can open directly once extracted.
+from anki.collection import Collection
+
+# Newest first. Only "anki21b" is zstd-compressed; the other two are plain SQLite.
 _COLLECTION_NAMES = ("collection.anki21b", "collection.anki21", "collection.anki2")
 
 
@@ -39,15 +61,17 @@ def _decompress_if_needed(name: str, raw: bytes) -> bytes:
             f"{name} is zstd-compressed but the `zstandard` package is not installed. "
             "pip install -r migration/requirements.txt"
         ) from e
-    return zstandard.ZstdDecompressor().decompress(raw)
+    # Anki writes the frame without an embedded content size (a streaming
+    # compress, not a one-shot with a known length up front) — confirmed against
+    # a real export; `ZstdDecompressor.decompress()` requires that header and
+    # raises "could not determine content size in frame header" without it.
+    # `stream_reader` makes no such assumption.
+    with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
+        return reader.read()
 
 
-def open_collection(export_path: Path) -> tuple[sqlite3.Connection, str]:
-    """Returns (connection, format_name). Caller owns closing the connection.
-
-    format_name is one of "anki21b", "anki21", "anki2" — recorded in the report so a
-    human can tell at a glance which code path actually ran.
-    """
+def _extract_collection_bytes(export_path: Path) -> tuple[bytes, str]:
+    """Returns (decompressed sqlite bytes, format name)."""
     try:
         zf_ctx = zipfile.ZipFile(export_path)
     except (zipfile.BadZipFile, FileNotFoundError, IsADirectoryError) as e:
@@ -60,27 +84,36 @@ def open_collection(export_path: Path) -> tuple[sqlite3.Connection, str]:
                 continue
             raw = zf.read(candidate)
             data = _decompress_if_needed(candidate, raw)
-            # sqlite3 needs a real file on disk — there is no portable in-memory load
-            # from bytes across the Python versions this has to run on. The temp file
-            # is deleted as soon as the connection using it is opened; SQLite keeps
-            # reading it fine on POSIX (the inode stays alive until every fd closes).
-            tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-            try:
-                tmp.write(data)
-                tmp.close()
-                # Read-only URI mode, deliberately: this package never writes to a
-                # collection (see the module docstring in __init__.py), and opening
-                # read-only means SQLite never needs the on-disk path to create a
-                # rollback journal — so unlinking the path immediately below is safe
-                # for every access this connection will ever make.
-                conn = sqlite3.connect(f"file:{quote(tmp.name)}?mode=ro", uri=True)
-                conn.row_factory = sqlite3.Row
-            finally:
-                Path(tmp.name).unlink(missing_ok=True)
-            return conn, candidate.removeprefix("collection.")
+            return data, candidate.removeprefix("collection.")
 
         raise UnreadableExportError(
             "No collection database found in this export under any known name "
             f"({', '.join(_COLLECTION_NAMES)}). Files actually present: "
             f"{sorted(names_present) or '(empty zip)'}"
         )
+
+
+@contextlib.contextmanager
+def open_collection(export_path: Path):
+    """`with open_collection(path) as (col, format_name): ...`
+
+    format_name is one of "anki21b", "anki21", "anki2" — recorded in the report so a
+    human can tell at a glance which container shape actually ran.
+
+    The throwaway copy lives for exactly the `with` block's duration. Anki's
+    `Collection` can perform a schema upgrade on open, write lock files, and so on —
+    all of that happens to the copy, never to `export_path`.
+    """
+    data, format_name = _extract_collection_bytes(export_path)
+
+    tmpdir = tempfile.mkdtemp(prefix="capybara_anki_migration_")
+    try:
+        copy_path = Path(tmpdir) / "collection.anki2"
+        copy_path.write_bytes(data)
+        col = Collection(str(copy_path))
+        try:
+            yield col, format_name
+        finally:
+            col.close()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

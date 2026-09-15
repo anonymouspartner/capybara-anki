@@ -1,80 +1,64 @@
-"""Builds synthetic Anki-schema collections for tests.
+"""Builds synthetic Anki collections for tests — via the real `anki` library.
 
 Never touches the maintainer's real collection — deliberately. Real exports contain
 the corpus (see this repo's .gitignore and README); tests only ever exercise this
 package against data invented here.
+
+**Why the `anki` library builds these rather than hand-written SQL**, verified
+2026-09-15: a hand-rolled schema is exactly how the previous version of this file
+diverged from reality — it modeled the *old* Anki schema (note types as JSON in
+`col.models`, deck options as JSON in `col.dconf`), which a real, current AnkiDroid
+export doesn't use at all anymore (see reader.py's docstring). Anki's own library
+can't drift from Anki's own schema. Building fixtures with the same library
+`migration/` reads with means a schema-version fixture staying wrong silently is no
+longer a failure mode — if `anki` changes its schema, both sides move together.
+
+Card scheduling state (type/queue/due/ivl/reps/lapses/FSRS `data`) and revlog rows
+have no note-level API for synthetic test data, so those are written directly via
+`col.db.execute(...)` after the note/card exist — still real tables, same shapes
+`extract.py` reads, just poked in by hand rather than by simulating real reviews.
 """
 
 from __future__ import annotations
 
+import io
 import json
-import sqlite3
+import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import zstandard
+from anki.collection import Collection
 
-FIELD_SEP = "\x1f"
 CAPYBARA_FIELDS = [
     "lemma",
     "gloss",
-    "lemma_translation",
     "part_of_speech",
     "language",
     "example",
     "example_translation",
+    "lemma_translation",
 ]
 
-_SCHEMA = """
-create table col (
-  id integer primary key, crt integer, mod integer, scm integer, ver integer,
-  dty integer, usn integer, ls integer, conf text, models text, decks text,
-  dconf text, tags text
-);
-create table notes (
-  id integer primary key, guid text, mid integer, mod integer, usn integer,
-  tags text, flds text, sfld text, csum integer, flags integer, data text
-);
-create table cards (
-  id integer primary key, nid integer, did integer, ord integer, mod integer,
-  usn integer, type integer, queue integer, due integer, ivl integer,
-  factor integer, reps integer, lapses integer, left integer, odue integer,
-  odid integer, flags integer, data text
-);
-create table revlog (
-  id integer primary key, cid integer, usn integer, ease integer, ivl integer,
-  lastIvl integer, factor integer, time integer, type integer
-);
-"""
-
-CAPYBARA_MID = 1700000000001
-UKRAINIAN_DECK_ID = 2
-CAPYBARA_DCONF_ID = 3
-
-
-@dataclass
-class FixtureNote:
-    note_id: int
-    guid: str
-    lemma: str
-    gloss: str = ""
-    lemma_translation: str = ""
-    part_of_speech: str = ""
-    language: str = "uk"
-    example: str = ""
-    example_translation: str = ""
+PRONUNCIATION_FIELDS = ["TargetText", "ReferenceAudio", "Translation", "Language", "Hint", "SourceId"]
 
 
 @dataclass
 class FixtureCard:
-    card_id: int
-    note_id: int
-    deck_id: int = UKRAINIAN_DECK_ID
-    type: int = 2  # review
-    queue: int = 2
-    due: int = 30  # days since collection creation
+    lemma: str
+    gloss: str = ""
+    part_of_speech: str = ""
+    language: str = "uk"
+    example: str = ""
+    example_translation: str = ""
+    lemma_translation: str = ""
+    note_type: str = "capybara"  # "capybara" | "capybara_plus" | "pronunciation"
+    deck: str = "Capybara::Ukrainian"
+    type: int = 2  # 0 new, 1 learning, 2 review, 3 relearning
+    queue: int = 2  # -1 suspended
+    due: int = 30  # days since collection creation, for type 2/3
     ivl: int = 10
     reps: int = 3
     lapses: int = 0
@@ -84,145 +68,173 @@ class FixtureCard:
 
 @dataclass
 class FixtureReview:
-    revlog_id: int  # epoch-ms
-    card_id: int
+    card_index: int  # position in FixtureCollection.cards
     ease: int = 3
     ivl: int = 10
+    days_after_crt: float = 1.0
 
 
 @dataclass
 class FixtureCollection:
     crt: int = 1_700_000_000  # collection creation, epoch seconds
-    notes: list[FixtureNote] = field(default_factory=list)
     cards: list[FixtureCard] = field(default_factory=list)
     reviews: list[FixtureReview] = field(default_factory=list)
     fsrs_params: list[float] = field(default_factory=lambda: [0.4, 0.6, 2.4, 5.8])
     desired_retention: float = 0.9
-    learning_steps: list[int] = field(default_factory=lambda: [1, 10])
+    learning_steps: list[float] = field(default_factory=lambda: [1.0, 10.0])
     daily_new_limit: int = 20
     daily_review_limit: int = 200
     max_interval: int = 36500
 
 
 def _default_collection() -> FixtureCollection:
-    fc = FixtureCollection()
-    fc.notes = [
-        FixtureNote(1, "guid-aaa", "важкий", "hard", "hard (difficulty)", "adj", "uk",
-                    "Це було важке завдання.", "It was a hard task."),
-        FixtureNote(2, "guid-bbb", "капібара", "capybara", "capybara", "noun", "uk",
-                    "Капібара плаває в річці.", "The capybara swims in the river."),
-        FixtureNote(3, "guid-ccc", "новий", "new", "new", "adj", "uk",
-                    "Це новий підручник.", "This is a new textbook."),
-    ]
-    fc.cards = [
-        FixtureCard(101, 1, type=2, queue=2, due=30, ivl=10, reps=3, lapses=0,
-                    stability=8.5, difficulty=5.2),
-        FixtureCard(102, 2, type=2, queue=-1, due=15, ivl=5, reps=5, lapses=1,
-                    stability=12.1, difficulty=3.9),  # suspended
-        FixtureCard(103, 3, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0,
-                    stability=None, difficulty=None),  # new, no FSRS state yet
-    ]
-    fc.reviews = [
-        FixtureReview(1_700_100_000_000, 101, ease=3, ivl=3),
-        FixtureReview(1_700_186_400_000, 101, ease=3, ivl=10),  # +1 day later
-        FixtureReview(1_700_300_000_000, 102, ease=2, ivl=1),
-        FixtureReview(1_700_400_000_000, 102, ease=4, ivl=5),
-        FixtureReview(1_700_500_000_000, 102, ease=3, ivl=15),
-    ]
-    return fc
-
-
-def _build_sqlite(fc: FixtureCollection, note_type_name: str = "Capybara",
-                   note_type_fields: list[str] | None = None,
-                   fsrs_params_key: str = "fsrsParams5") -> bytes:
-    """`fsrs_params_key` exists for test_config.py's "Anki renamed the key" case —
-    everywhere else uses the default, matching what config.py actually looks for."""
-    fields = CAPYBARA_FIELDS if note_type_fields is None else note_type_fields
-    models = {
-        str(CAPYBARA_MID): {
-            "name": note_type_name,
-            "flds": [{"name": f} for f in fields],
-        }
-    }
-    decks = {
-        "1": {"name": "Default", "conf": 1},
-        str(UKRAINIAN_DECK_ID): {"name": "Capybara::Ukrainian", "conf": CAPYBARA_DCONF_ID},
-    }
-    dconf = {
-        "1": {"new": {"delays": [1, 10], "perDay": 20}, "rev": {"perDay": 200, "maxIvl": 36500}},
-        str(CAPYBARA_DCONF_ID): {
-            fsrs_params_key: fc.fsrs_params,
-            "desiredRetention": fc.desired_retention,
-            "new": {"delays": fc.learning_steps, "perDay": fc.daily_new_limit},
-            "rev": {"perDay": fc.daily_review_limit, "maxIvl": fc.max_interval},
-        },
-    }
-
-    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
-        db_path = tmp.name
-    conn = sqlite3.connect(db_path)
-    conn.executescript(_SCHEMA)
-    conn.execute(
-        "insert into col (id, crt, mod, scm, ver, dty, usn, ls, conf, models, decks, dconf, tags) "
-        "values (1, ?, 0, 0, 18, 0, 0, 0, '{}', ?, ?, ?, '{}')",
-        (fc.crt, json.dumps(models), json.dumps(decks), json.dumps(dconf)),
+    return FixtureCollection(
+        cards=[
+            FixtureCard("важкий", "hard", "adj", "uk", "Це було важке завдання.",
+                        "It was a hard task.", "hard (difficulty)",
+                        type=2, queue=2, due=30, ivl=10, reps=3, lapses=0,
+                        stability=8.5, difficulty=5.2),
+            FixtureCard("капібара", "capybara", "noun", "uk", "Капібара плаває в річці.",
+                        "The capybara swims in the river.", "capybara",
+                        type=2, queue=-1, due=15, ivl=5, reps=5, lapses=1,
+                        stability=12.1, difficulty=3.9),  # suspended
+            FixtureCard("новий", "new", "adj", "uk", "Це новий підручник.",
+                        "This is a new textbook.", "new",
+                        type=0, queue=0, due=0, ivl=0, reps=0, lapses=0,
+                        stability=None, difficulty=None),  # new, no FSRS state yet
+        ],
+        reviews=[
+            FixtureReview(card_index=0, ease=3, ivl=3, days_after_crt=1),
+            FixtureReview(card_index=0, ease=3, ivl=10, days_after_crt=2),
+            FixtureReview(card_index=1, ease=2, ivl=1, days_after_crt=1),
+            FixtureReview(card_index=1, ease=4, ivl=5, days_after_crt=2),
+            FixtureReview(card_index=1, ease=3, ivl=15, days_after_crt=3),
+        ],
     )
-    for n in fc.notes:
-        flds = FIELD_SEP.join(
-            [n.lemma, n.gloss, n.lemma_translation, n.part_of_speech, n.language,
-             n.example, n.example_translation]
-        )
-        conn.execute(
-            "insert into notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data) "
-            "values (?, ?, ?, 0, 0, '', ?, ?, 0, 0, '')",
-            (n.note_id, n.guid, CAPYBARA_MID, flds, n.lemma),
-        )
-    for c in fc.cards:
-        data = {}
-        if c.stability is not None:
-            data["s"] = c.stability
-        if c.difficulty is not None:
-            data["d"] = c.difficulty
-        conn.execute(
-            "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, "
-            "factor, reps, lapses, left, odue, odid, flags, data) "
-            "values (?, ?, ?, 0, 0, 0, ?, ?, ?, ?, 2500, ?, ?, 0, 0, 0, 0, ?)",
-            (c.card_id, c.note_id, c.deck_id, c.type, c.queue, c.due, c.ivl,
-             c.reps, c.lapses, json.dumps(data)),
-        )
-    for r in fc.reviews:
-        conn.execute(
-            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) "
-            "values (?, ?, 0, ?, ?, 0, 2500, 5000, 1)",
-            (r.revlog_id, r.card_id, r.ease, r.ivl),
-        )
-    conn.commit()
-    conn.close()
-
-    data = Path(db_path).read_bytes()
-    Path(db_path).unlink()
-    return data
 
 
-def write_export(
-    out_path: Path,
-    compressed: bool,
-    fc: FixtureCollection | None = None,
-    note_type_name: str = "Capybara",
-    note_type_fields: list[str] | None = None,
-    fsrs_params_key: str = "fsrsParams5",
-) -> Path:
+def _add_capybara_note_type(col: Collection, name: str, fields: list[str]) -> dict:
+    nt = col.models.new(name)
+    for f in fields:
+        fld = col.models.new_field(f)
+        col.models.add_field(nt, fld)
+    tmpl = col.models.new_template("Card 1")
+    tmpl["qfmt"] = f"{{{{{fields[0]}}}}}"
+    tmpl["afmt"] = "{{FrontSide}}<hr>" + "".join(f"{{{{{f}}}}}" for f in fields[1:])
+    col.models.add_template(nt, tmpl)
+    col.models.add(nt)
+    return nt
+
+
+def _build_collection_bytes(fc: FixtureCollection) -> bytes:
+    tmpdir = tempfile.mkdtemp(prefix="capybara_anki_fixture_")
+    try:
+        path = f"{tmpdir}/collection.anki2"
+        col = Collection(path)
+
+        note_types = {
+            "capybara": _add_capybara_note_type(col, "Capybara", CAPYBARA_FIELDS),
+            "capybara_plus": _add_capybara_note_type(col, "Capybara+", CAPYBARA_FIELDS),
+            "pronunciation": _add_capybara_note_type(
+                col, "Capybara Pronunciation (shadowing)", PRONUNCIATION_FIELDS
+            ),
+        }
+
+        # Collection creation time isn't separately settable via the public API in
+        # every version — pin it directly, the same way real Anki data is read.
+        col.db.execute("update col set crt = ?", fc.crt)
+
+        # Deck config: one preset ("Capybara"), matching the real collection's shape
+        # of a single shared preset rather than one per deck. Created and assigned
+        # to the standard Capybara decks unconditionally — not only when a card
+        # happens to reference one — so a caller building a FixtureCollection() just
+        # to inspect scheduler settings (no cards at all) still gets a real deck to
+        # resolve config from, the same as the real collection always has one.
+        config_id = col.decks.add_config_returning_id("Capybara")
+        cfg = col.decks.get_config(config_id)
+        cfg["fsrsParams5"] = fc.fsrs_params
+        cfg["desiredRetention"] = fc.desired_retention
+        cfg["new"]["delays"] = fc.learning_steps
+        cfg["new"]["perDay"] = fc.daily_new_limit
+        cfg["rev"]["perDay"] = fc.daily_review_limit
+        cfg["rev"]["maxIvl"] = fc.max_interval
+        col.decks.update_config(cfg)
+
+        for deck_name in ("Capybara::Ukrainian", "Capybara::English"):
+            did = col.decks.id(deck_name, create=True)
+            col.decks.set_config_id_for_deck_dict(col.decks.get(did), config_id)
+
+        card_ids: list[int] = []
+        for spec in fc.cards:
+            nt = note_types[spec.note_type]
+            note = col.new_note(nt)
+            values = {
+                "lemma": spec.lemma,
+                "gloss": spec.gloss,
+                "part_of_speech": spec.part_of_speech,
+                "language": spec.language,
+                "example": spec.example,
+                "example_translation": spec.example_translation,
+                "lemma_translation": spec.lemma_translation,
+            }
+            for fname in CAPYBARA_FIELDS:
+                note[fname] = values[fname]
+
+            did = col.decks.id(spec.deck, create=True)
+            col.decks.set_config_id_for_deck_dict(col.decks.get(did), config_id)
+            col.add_note(note, did)
+
+            card_id = col.card_ids_of_note(note.id)[0]
+            card_ids.append(card_id)
+
+            data = {}
+            if spec.stability is not None:
+                data["s"] = spec.stability
+            if spec.difficulty is not None:
+                data["d"] = spec.difficulty
+            col.db.execute(
+                "update cards set type=?, queue=?, due=?, ivl=?, reps=?, lapses=?, data=? "
+                "where id=?",
+                spec.type, spec.queue, spec.due, spec.ivl, spec.reps, spec.lapses,
+                json.dumps(data), card_id,
+            )
+
+        for i, review in enumerate(fc.reviews):
+            card_id = card_ids[review.card_index]
+            # +i milliseconds: two reviews (different cards) can share the same
+            # days_after_crt, and revlog.id must be globally unique — it's a real
+            # timestamp in real Anki data, where that's true by construction.
+            revlog_id = int(fc.crt * 1000 + review.days_after_crt * 86_400_000) + i
+            col.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) "
+                "values (?, ?, -1, ?, ?, 0, 2500, 5000, 1)",
+                revlog_id, card_id, review.ease, review.ivl,
+            )
+
+        col.close()
+        return Path(path).read_bytes()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def write_export(out_path: Path, compressed: bool, fc: FixtureCollection | None = None) -> Path:
     """Writes a synthetic .colpkg-shaped zip to out_path. compressed=True produces
     the modern zstd (collection.anki21b) shape; False produces the plain
-    (collection.anki21) shape this repo's other test suite already reads."""
+    (collection.anki21) shape.
+
+    Streamed compression, not one-shot, when compressed=True — verified against a
+    real export that this is what Anki actually writes (a zstd frame with no
+    content-size header). See reader.py's docstring.
+    """
     fc = fc or _default_collection()
-    raw = _build_sqlite(fc, note_type_name=note_type_name, note_type_fields=note_type_fields,
-                         fsrs_params_key=fsrs_params_key)
+    raw = _build_collection_bytes(fc)
 
     with zipfile.ZipFile(out_path, "w") as zf:
         if compressed:
-            payload = zstandard.ZstdCompressor().compress(raw)
-            zf.writestr("collection.anki21b", payload)
+            buf = io.BytesIO()
+            with zstandard.ZstdCompressor().stream_writer(buf, closefd=False) as writer:
+                writer.write(raw)
+            zf.writestr("collection.anki21b", buf.getvalue())
         else:
             zf.writestr("collection.anki21", raw)
         zf.writestr("media", "{}")

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from migration.extract import NoteType, RawCard, RawNote, RawReview
 from migration.transform import (
+    EXPECTED_FIELDS,
     compute_elapsed_days,
     note_uuid,
     review_uuid,
@@ -9,18 +10,24 @@ from migration.transform import (
     transform_note,
     transform_review,
 )
-from migration.tests.fixtures import CAPYBARA_FIELDS, CAPYBARA_MID
+
+# A placeholder id, not a real Anki note-type id — these are hand-built unit tests
+# of transform_note() in isolation, so all that matters is that RawNote.mid and
+# NoteType.mid agree with each other, not that either is a real assigned value.
+_TEST_MID = "1"
 
 
 def _capybara_note_type():
-    return NoteType(mid=str(CAPYBARA_MID), name="Capybara", field_names=CAPYBARA_FIELDS)
+    return NoteType(mid=_TEST_MID, name="Capybara", field_names=EXPECTED_FIELDS)
 
 
 def _raw_note(**overrides):
+    # Field order matches EXPECTED_FIELDS — verified against a real export,
+    # 2026-09-15: lemma_translation is LAST, not third (see transform.py).
     defaults = dict(
-        id=1, guid="guid-aaa", mid=str(CAPYBARA_MID),
-        fields=["важкий", "hard", "hard (difficulty)", "adj", "uk",
-                "Це було важке завдання.", "It was a hard task."],
+        id=1, guid="guid-aaa", mid=_TEST_MID,
+        fields=["важкий", "hard", "adj", "uk",
+                "Це було важке завдання.", "It was a hard task.", "hard (difficulty)"],
         tags=[],
     )
     defaults.update(overrides)
@@ -55,18 +62,31 @@ class TestTransformNote:
         assert note is None
         assert "unknown note type" in skip_reason
 
-    def test_wrong_note_type_name_is_skipped(self):
+    def test_note_type_with_unrelated_fields_is_skipped(self):
+        """A completely different field set (e.g. the real collection's separate
+        'Capybara Pronunciation (shadowing)' note type) is excluded — by field
+        signature, not by name. See the module comment above EXPECTED_FIELDS."""
         wrong_type = NoteType(mid="99", name="Basic", field_names=["Front", "Back"])
         note, skip_reason = transform_note(_raw_note(mid="99"), wrong_type)
         assert note is None
-        assert "not 'Capybara'" in skip_reason
+        assert "fields don't match" in skip_reason
+
+    def test_note_type_name_is_irrelevant_to_recognition(self):
+        """Verified against a real export: two different note-type NAMES
+        ("Capybara" and "Capybara+") carry the identical Capybara vocabulary field
+        set. Recognition has to key on fields, not name, or one of the two would be
+        silently skipped."""
+        differently_named = NoteType(mid="7", name="Capybara+", field_names=EXPECTED_FIELDS)
+        note, skip_reason = transform_note(_raw_note(mid="7"), differently_named)
+        assert skip_reason is None
+        assert note is not None
 
     def test_reordered_fields_are_skipped_not_silently_misread(self):
         """A field-order mismatch is exactly the failure mode that would otherwise
         put a translation in the lemma column with no error anywhere."""
         reordered = NoteType(
-            mid=str(CAPYBARA_MID), name="Capybara",
-            field_names=["gloss", "lemma", *CAPYBARA_FIELDS[2:]],
+            mid=_TEST_MID, name="Capybara",
+            field_names=["gloss", "lemma", *EXPECTED_FIELDS[2:]],
         )
         note, skip_reason = transform_note(_raw_note(), reordered)
         assert note is None

@@ -51,7 +51,7 @@ Inherited from `capybara-bot`, and they apply here too:
 
 | Step | State |
 |---|---|
-| 0 · Migration spike — read an export, report what is in it | **built, untested against a real export** — see [`migration/`](migration/) |
+| 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | not started |
 | 2 · Reviewer | not started |
 | 3 · Offline | not started |
@@ -68,9 +68,10 @@ never touches Postgres, never deployed (see `docs/DESIGN.md` D7). See
 [`migration/README.md`](migration/README.md) for how to get an export off a phone and
 run it.
 
-It's built and tested against synthetic fixtures (30 tests, CI-checked on every push),
-but **not yet run against a real collection** — the container-format assumption in
-`docs/DESIGN.md` §7.1 and the Anki-internals key names `migration/config.py` searches
-for are both still unverified against an actual file. That's the very next thing to
-do, and the code is written to fail loudly rather than guess if either assumption
-turns out wrong.
+**Verified against a real AnkiDroid export, 2026-09-15**: 1094 vocabulary notes read
+cleanly (204 pronunciation-practice notes correctly excluded), 4504 reviews spanning
+three months, 1034/1094 cards carrying real FSRS memory state. Five real gaps between
+the original design and the actual file were found and fixed along the way — see
+`docs/DESIGN.md` §7.5 for what they were. 37 tests, all against synthetic fixtures
+built with the real `anki` library (never the maintainer's actual collection),
+CI-checked on every push.

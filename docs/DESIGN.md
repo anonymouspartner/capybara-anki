@@ -29,9 +29,10 @@ scanner is the app being absorbed.
 - The safety property that makes this defensible: **`card_state` is a fold over an
   append-only `reviews` log.** Scheduling state is a cache, never the truth. Any bug,
   any bad migration, any FSRS upgrade — replay the log.
-- **Build the migration spike first**, before any UI. It is the only step that can prove
-  the whole idea impossible, it depends on none of the other decisions, and it is a day
-  of work.
+- **The migration spike is built and verified against a real export** (§7.5): 1094
+  vocabulary notes, 4504 reviews, three months of real history, read cleanly. Five
+  real gaps between the original design and the actual file were found and fixed in
+  the process — this is exactly the outcome step 0 was for, and it's done.
 
 ---
 
@@ -133,7 +134,7 @@ Locked unless revisited deliberately.
 | D4 | Same Supabase project as the bot | One Postgres, so the feedback loop into `/recap` is later a join, not an integration. |
 | D5 | One unified app, scanner included | Deletes the entire export/import surface. The reason the project is worth doing at all. |
 | D6 | TypeScript for everything hosted | One language, one deploy target, one secret store. Reuses the Anthropic-from-Deno pattern already proven in the bot. |
-| D7 | Python **only** for the migration CLI | Local tool, run a handful of times, never hosted. Gets the mature zip/SQLite/zstd stack for the one task where being wrong costs review history. |
+| D7 | Python **only** for the migration CLI | Local tool, run a handful of times, never hosted. Gets the mature zip/SQLite/zstd stack for the one task where being wrong costs review history — and, verified 2026-09-15 (§7.5), gets to depend on the actual `anki` package for the one piece (deck options) that's a genuine protobuf blob in a real collection with no JSON fallback. A heavier dependency costs nothing here specifically because this stays local-only. |
 | D8 | Image prep in the browser | Canvas resize before upload: ~1MB over mobile data instead of a 12MB camera original. Browsers apply EXIF orientation automatically, so the hand-rolled rotation goes away. |
 | D9 | New third repo | Clean boundaries. Scanner and bot both feed it. |
 | D10 | No ingest review step | Scan, extract, import. Fixing happens in the reviewer instead — see D11. |
@@ -375,16 +376,32 @@ Audio is the bulk of offline storage and needs an explicit caching policy — se
 
 **Build this first (§9).** It is the only step that can prove the project impossible.
 
+**Status: done. Verified against a real AnkiDroid export, 2026-09-15.** Everything
+in this section was written before that verification and has been corrected in
+place rather than kept as a separate "what we predicted" record — §7.5 has the
+findings that actually changed something, for anyone who wants the diff between the
+plan and reality.
+
 ### 7.1 What is being read
 
-A collection export is a zip containing a SQLite database. Modern Anki compresses it
-(`collection.anki21b`, zstd) rather than shipping plain SQLite. This repo's existing
-test suite already unzips an `.apkg` and reads its SQLite the way Anki would — but that
-is the *older uncompressed* format genanki produces. A real phone export will likely
-need a decompression step, or Anki's "support older Anki versions" export option.
+A collection export is a zip containing a SQLite database, which the container-name
+guess in the original draft got right on the first try: `collection.anki21b`,
+zstd-compressed. What the original draft got wrong turned out to be everything
+*inside* that database, not the container — see §7.5.
 
-**Verify against an actual export before promising anything here.** This is the single
-largest unknown in the document.
+### 7.1a The bigger discovery: which Anki this is matters more than which file format
+
+The container format was a one-time guess to verify. What actually needed verifying
+— and didn't hold — was the assumption that a collection database looks like the
+one this repo's own scanner produces via genanki. It doesn't, not anymore. A real,
+current AnkiDroid export is Anki's post-Rust-rewrite schema: note-type definitions
+and deck options have moved out of the JSON blobs (`col.models` / `col.decks` /
+`col.dconf` — all **empty strings** in a real file) this design originally assumed,
+into dedicated tables, with deck options specifically stored as a **protobuf blob**.
+There is no hand-rolled way to decode that which doesn't silently break on the next
+Anki release, so the migration CLI reads through Anki's own `anki` library —
+opened against a throwaway copy, never the real file — rather than a bare
+`sqlite3.Connection`. See `migration/reader.py`'s docstring for the full mechanics.
 
 ### 7.2 Idempotency
 
@@ -413,12 +430,73 @@ important, and easy to forget:
 Those five settings *are* the felt experience of a day's reviews. Perfect card data with
 wrong limits will feel wrong.
 
+**Verified values, real collection, 2026-09-15:** desired retention `0.9`, learning
+steps `[1, 10]` (minutes), daily new limit `40`, daily review limit `200`, max
+interval `36500` days. The FSRS parameter vector is an **empty list** — see §7.5,
+this is a real, meaningful state (FSRS is on and scheduling cards, but "Optimize"
+has never been run), not a missing value.
+
 ### 7.4 Output
 
 The CLI does not write to Postgres. It emits files, and prints a report: how many notes,
 how many cards, date range of the review log, anything it could not parse. Reading is
 separable from writing, and the first run should be a read-only question — *what is
 actually in here?* — not a mutation of the live couple database.
+
+### 7.5 Everything else the real export changed
+
+Five findings, each one a place the original design (written before any real file
+existed) was wrong in a way only a real file could surface — which is the entire
+argument for building this step first, per §9.
+
+1. **The zstd frame has no content-size header.** Anki streams the compress rather
+   than doing a one-shot with a known length, so `ZstdDecompressor.decompress()`
+   fails with "could not determine content size in frame header" on a real file
+   despite passing every test against a synthetic one that used the easier form.
+   Fixed with a streaming reader (`reader.py`); the test fixture builder now
+   reproduces the real framing so this can't quietly regress.
+
+2. **The vocabulary note type's field order is not what the scanner's own
+   `APKG_FIELDS` says.** `anki_package.py` lists `lemma_translation` third; the real
+   collection has it **last**. Trusting the scanner's own constant instead of the
+   file would have rejected every real note. Ground truth wins — `transform.py`'s
+   `EXPECTED_FIELDS` now matches the file, not the other repo.
+
+3. **There are two note-type names carrying the same vocabulary schema** —
+   "Capybara" (850 notes) and "Capybara+" (244 notes), the latter apparently a
+   deliberate later revision (see finding 5, not an accidental duplicate). Matching
+   by name would silently drop whichever wasn't hardcoded. Recognition is by field
+   *signature* now, not name — see `transform.py`'s module comment.
+
+4. **Deck names aren't stored the way they display.** The `decks.name` column holds
+   path components joined by `\x1f` (the same separator note fields use), not
+   literal `::` — a raw-SQL read gets `Capybara\x1fUkrainian`, which prints as the
+   invisible-character mess `CapybaraUkrainian` in a terminal and is easy to miss
+   entirely. Reading deck names through the Anki library (`col.decks.all_names_and_ids()`)
+   resolves this correctly; `get_deck_names()` in `extract.py` does that rather than
+   reading the column directly.
+
+5. **"Capybara+" isn't a name variant — it has a second card template.** `Capybara`
+   has one template (`Card 1`); `Capybara+` has two (`Card 1` and `Spelling`), which
+   is presumably what feeds the separate `CapybaraSpelling` deck. §1.3's "one card
+   template, one direction" description is true of the *original* note type and no
+   longer true of the collection as a whole — 244 notes produce two cards apiece.
+   The migration CLI already handles multi-card notes correctly (uses the lower-id
+   card for `card_state`, keeps review history from every card, warns once per
+   note) — this is not a migration bug. It **is** an open product question for the
+   reviewer: does a spelling card belong in the same due queue as a recall card, as
+   its own queue, or does this become one of the "not carried forward" list for a
+   v1 cutover? Not decided; added to §11.
+
+None of the five needed a redesign. All five were fixed in the code they touched,
+with a comment or a test (often both) explaining what broke and why, so nobody
+re-discovers them from a stack trace six months from now.
+
+Full real counts, for scale, and as a sanity check anyone re-running this against a
+newer export can compare against: **1094 vocabulary notes** read cleanly (204
+pronunciation-practice notes correctly excluded, 0 unexpected skips), **1034 of
+1094 cards carry FSRS memory state** (the remainder are new/unreviewed), **1
+suspended card**, **4504 reviews** spanning 2026-06-10 to 2026-09-12.
 
 ---
 
@@ -448,7 +526,7 @@ the risk survivable.
 
 | Step | What | Why here |
 |---|---|---|
-| **0** | Migration spike — read an export, print a report | Only step that can prove the idea impossible. Depends on no other decision. One day. |
+| **0** | Migration spike — read an export, print a report | **Done, verified against a real export (§7.5).** |
 | 1 | Schema + review log + FSRS replay, server-side | The durability property (§4.3) has to exist before anything writes reviews. |
 | 2 | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place** | The daily loop. Usable at this point, online-only. |
 | 3 | Offline: service worker, IndexedDB, queued reviews | Turns it into something that replaces AnkiDroid rather than supplements it. |
@@ -456,8 +534,9 @@ the risk survivable.
 | 5 | Scanner: camera, canvas resize, `/scan` edge function | Deletes the export/import tax (§1.2). |
 | 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. |
 
-Step 0 before anything else is the whole point. A day of work that either de-risks the
-project or saves a month.
+Step 0 was the whole point of doing this first: a day of work that either de-risks the
+project or saves a month. It found five real gaps between plan and reality (§7.5) and
+none of them were fatal — the project is not stopping.
 
 ---
 
@@ -491,9 +570,17 @@ Not blocking the migration spike; blocking step 1.
    today, and does the same value carry over?
 4. **What `language` means for queue filtering.** The decks are effectively disjoint by
    language (§9.1 assumption), but that is an assumption, not a constraint — nothing
-   currently stops a note being relevant to both users.
-5. **Repo name.** `capybara-cards` is proposed, to sit alongside `capybara-bot`. Not
-   locked.
+   currently stops a note being relevant to both users. The real deck list (§7.5) is
+   also richer than "Ukrainian/English": `Capybara::Grammar`, `Capybara::Spelling`,
+   `Capybara::Pronunciation(::Ukrainian)` all exist too. Whatever "language" ends up
+   meaning for filtering has to account for decks that aren't about a language at all.
+5. **The `Capybara+` second card template.** 244 real notes produce two cards each —
+   a normal recall card and a `Spelling` card (§7.5, finding 5). Does the reviewer
+   surface both as separate due items, fold spelling into the same review, or is this
+   left out of a v1 cutover? Not decided.
+
+Resolved since first draft: repo name is `capybara-anki` (created, not
+`capybara-cards` as originally proposed).
 
 ---
 
@@ -501,7 +588,7 @@ Not blocking the migration spike; blocking step 1.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Collection export cannot be read or parsed | **Project-ending** | Step 0, before anything else is built |
+| Collection export cannot be read or parsed | ~~Project-ending~~ **Retired 2026-09-15** | Step 0 found it readable; see §7.5 for what needed fixing along the way |
 | Homegrown app loses review history | High | Append-only log (§4.3); `.apkg` export kept forever (§2.3) |
 | Offline sync bugs eat reviews silently | High | Client-generated ids, durable IndexedDB queue, idempotent ingest |
 | Scheduling feels subtly wrong after the switch | Medium | Port all five config values, not just card data (§7.3) |
@@ -516,6 +603,11 @@ If step 0 shows the collection cannot be read reliably, or that FSRS memory stat
 recoverable — stop. The fallback is not a rewrite: it is self-hosting Anki's sync server
 and periodically importing an export into Postgres for the feedback loop, which delivers
 §1.2's actual goal for a fraction of the work.
+
+**This did not happen.** Step 0 is done: the collection reads cleanly, 1034 of 1094
+cards carry real FSRS memory state, and every gap between the plan and the real file
+(§7.5) was a fix in the code that touched it, not a reason to reconsider the
+approach. Step 1 is unblocked.
 
 ---
 
