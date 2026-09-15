@@ -4,8 +4,10 @@ A self-owned spaced-repetition app for one couple learning each other's language
 offline reviewer, page scanner, and pronunciation practice, backed by the same
 Postgres the Capybara Telegram bot already writes to.
 
-**Nothing is built yet.** Read [`docs/DESIGN.md`](docs/DESIGN.md) first; it is the
-plan of record and explains why this exists at all.
+**Steps 0 and 1 are built** (migration, verified against a real export; schema and
+FSRS replay). Nothing user-facing exists yet — no reviewer, no deploy. Read
+[`docs/DESIGN.md`](docs/DESIGN.md) first; it is the plan of record and explains why
+this exists at all.
 
 ---
 
@@ -52,7 +54,7 @@ Inherited from `capybara-bot`, and they apply here too:
 | Step | State |
 |---|---|
 | 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
-| 1 · Schema, review log, FSRS replay | not started |
+| 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
 | 2 · Reviewer | not started |
 | 3 · Offline | not started |
 | 4 · Real migration | not started |
@@ -75,3 +77,27 @@ the original design and the actual file were found and fixed along the way — s
 `docs/DESIGN.md` §7.5 for what they were. 37 tests, all against synthetic fixtures
 built with the real `anki` library (never the maintainer's actual collection),
 CI-checked on every push.
+
+## Schema and FSRS replay
+
+`supabase/migrations/` has the real DDL for `notes`/`card_state`/`reviews`/
+`scheduler_config` (docs/DESIGN.md §5) — **not applied anywhere**; see that file's
+own header for why and for the open question of which repo's migration history
+eventually carries it.
+
+`src/fsrs/` implements §4.3's actual claim in TypeScript (Deno, `ts-fsrs`):
+`card_state` is a fold over the append-only `reviews` log, and rebuilding it from
+nothing must reach the exact same place as applying reviews one at a time. That's
+not asserted, it's tested — `src/fsrs/replay.test.ts` builds a card's state both
+ways and asserts they agree, alongside determinism and order-independence.
+
+```bash
+deno test --allow-read --allow-env src/
+```
+
+Building this surfaced one real fix to the schema itself: `card_state` needed a
+`last_review` column that the original sketch didn't have. `ts-fsrs` derives elapsed
+time from it, and — confirmed directly against the library — ignores whatever
+`elapsed_days`/`scheduled_days` a resumed card carries. Real Anki independently
+agrees: a card's own memory-state JSON carries the equivalent (`lrt`), found while
+reading a real export during the migration spike.

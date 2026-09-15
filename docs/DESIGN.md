@@ -292,7 +292,13 @@ being scoped by `user_id` resolved from the token, not typed in.
 
 ## 5. Data model
 
-Sketch, not final. Column types elided where obvious.
+**Implemented, not a sketch** — `supabase/migrations/20260915210000_capybara_anki_schema.sql`
+has the real DDL (foreign keys, checks, indexes); this section is the annotated summary.
+Not applied anywhere — see that file's header for why and to which project.
+
+Foreign keys point at `capybara-bot`'s existing `"public"."users"` table (D4: same
+Supabase project), not a parallel identity system — a D13 device token resolves to
+one of its two rows, and that's what "which user" means in every table below.
 
 ```sql
 -- Shared pool. Both users see every note.
@@ -310,13 +316,22 @@ notes (
 -- who reviewed — see D2. Correct as long as a note is only ever reviewed by
 -- one person, which decks being disjoint by language makes true today.
 card_state (
-  note_id       uuid primary key,
-  due           date,
+  note_id       uuid primary key references notes(id),
+  due           timestamptz,      -- a real FSRS moment, not a day — see below
   stability     real,             -- FSRS memory state
   difficulty    real,             -- FSRS memory state
   state         smallint,         -- new | learning | review | relearning
   reps          integer,
   lapses        integer,
+  -- Required to correctly resume scheduling, found while building
+  -- src/fsrs/replay.ts: ts-fsrs derives elapsed time from this against the
+  -- next review's timestamp, and ignores whatever elapsed_days/scheduled_days
+  -- a resumed card carries — confirmed directly against the library, not
+  -- assumed. Real Anki agrees: a card's own memory-state JSON carries the
+  -- equivalent as "lrt" (last-review-time), found while reading a real
+  -- export during the migration spike (§7.5) — this wasn't a guess either
+  -- time.
+  last_review   timestamptz,
   suspended     boolean,
   -- Denormalized from the fold, not authoritative: whichever user_id last
   -- appeared in `reviews` for this note. Lets the reviewer filter "my due
@@ -324,27 +339,37 @@ card_state (
   -- column stops meaning anything and card_state must be split into a real
   -- (note_id, user_id) table by replaying `reviews` — the escape hatch D2
   -- exists for. Nothing about `reviews` itself has to change to do that.
-  last_user_id  uuid
+  last_user_id  uuid references users(id)
 );
 
 -- Append-only. The sync primitive (§4.2). Never updated, never deleted.
 reviews (
   id            uuid primary key, -- client-generated → idempotent upsert
-  note_id       uuid,
-  user_id       uuid,
-  rating        smallint,         -- 1..4
+  note_id       uuid references notes(id),
+  user_id       uuid references users(id),
+  rating        smallint,         -- 1..4 — matches ts-fsrs's Rating enum exactly,
+                                   -- which in turn matches Anki's own revlog.ease;
+                                   -- no translation needed anywhere in the pipeline
   reviewed_at   timestamptz,      -- client clock, when it happened
-  elapsed_days  integer,
+  elapsed_days  integer,          -- recorded for audit/cross-check; NOT an input
+                                   -- to replay — see card_state.last_review above
   scheduled_days integer,
   ingested_at   timestamptz default now()  -- server clock, when it arrived
 );
 
--- Per-person. Lifted verbatim from AnkiDroid at migration (§7.3).
+-- Per-person. Lifted verbatim from AnkiDroid at migration (§7.3). Verified real
+-- values for one user, 2026-09-15: desired_retention 0.9, learning_steps {1,10}
+-- (minutes — real numbers, hence real[] not integer[]), daily_new_limit 40,
+-- daily_review_limit 200, max_interval 36500. fsrs_params was an empty array —
+-- a real, meaningful state (§7.5), and ts-fsrs's generatorParameters() falls
+-- back to its own built-in defaults for an empty or wrong-length array
+-- (confirmed directly against the library), so the application layer never
+-- needs to special-case it.
 scheduler_config (
-  user_id           uuid primary key,
+  user_id           uuid primary key references users(id),
   fsrs_params       real[],
   desired_retention real,
-  learning_steps    integer[],
+  learning_steps    real[],
   daily_new_limit   integer,
   daily_review_limit integer,
   max_interval      integer
@@ -354,6 +379,22 @@ scheduler_config (
 Two clocks on `reviews` is deliberate. `reviewed_at` is what FSRS needs — when the
 recall actually happened. `ingested_at` is what debugging needs — when it reached the
 server, which on a week-long offline stretch is very different.
+
+### 5.1 `src/fsrs/replay.ts` — card_state is a fold, implemented
+
+Built and tested (`src/fsrs/replay.test.ts`, Deno, `ts-fsrs`) rather than left as a
+sketch, because §4.3's whole safety argument rests on one property: replaying a
+note's full review history from nothing must reach the *exact* same state as
+applying those same reviews one at a time, the way a live ingest path would. That's
+not asserted, it's tested directly — build the state both ways, assert deep
+equality — alongside determinism (no `enable_fuzz`, since replaying history is not
+scheduling a future review) and order-independence (the fold sorts by `reviewed_at`
+itself rather than trusting the caller).
+
+`suspended` is deliberately outside this fold entirely — see the module's docstring.
+Suspending a card is a UI action (D12), not something any rating history determines,
+so replay never touches it; a caller merges the fold's output with whatever
+`suspended` already is.
 
 ---
 
@@ -527,7 +568,7 @@ the risk survivable.
 | Step | What | Why here |
 |---|---|---|
 | **0** | Migration spike — read an export, print a report | **Done, verified against a real export (§7.5).** |
-| 1 | Schema + review log + FSRS replay, server-side | The durability property (§4.3) has to exist before anything writes reviews. |
+| **1** | Schema + review log + FSRS replay, server-side | **Done.** Schema in `supabase/migrations/` (unapplied); replay in `src/fsrs/` (§5.1), tested including the replay-equals-incremental property. |
 | 2 | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place** | The daily loop. Usable at this point, online-only. |
 | 3 | Offline: service worker, IndexedDB, queued reviews | Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Now there is somewhere for the data to land. |

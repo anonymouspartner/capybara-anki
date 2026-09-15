@@ -1,13 +1,14 @@
 name: check
 
-# Runs on every push and PR so a broken migration CLI is caught before it reaches
-# main. Every fixture is synthetic (migration/tests/fixtures.py) — this workflow
-# never touches a real collection export, needs no secrets, and makes no network
-# request beyond installing dependencies. Never add one.
+# Runs on every push and PR so a broken migration CLI or FSRS replay is caught
+# before it reaches main. Every fixture is synthetic (migration/tests/fixtures.py) —
+# this workflow never touches a real collection export, needs no secrets, and makes
+# no network request beyond installing dependencies. Never add one.
 #
-# There is nothing else in this repo yet to check (docs/DESIGN.md, no application
-# code) — this workflow covers the migration CLI, step 0 of the build order (§9),
-# and grows to cover the reviewer/edge functions once those exist.
+# Two jobs, matching the two languages this repo actually uses (D6/D7): Python for
+# the local-only migration CLI (step 0), Deno/TypeScript for everything that will
+# eventually be hosted — right now that's just the FSRS replay logic (step 1). Grows
+# to cover the reviewer/edge functions once those exist.
 
 on:
   push:
@@ -15,6 +16,22 @@ on:
   pull_request:
 
 jobs:
+  fsrs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check
+        run: deno check src/fsrs/*.ts
+
+      - name: Run tests
+        run: deno test --allow-read --allow-env src/
+
   migration:
     runs-on: ubuntu-latest
     strategy:
