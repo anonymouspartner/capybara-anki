@@ -128,7 +128,7 @@ Locked unless revisited deliberately.
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | Offline-first PWA | Matches how AnkiDroid is actually used — reviewing without signal. The single biggest driver of effort, and non-negotiable. |
-| D2 | Cards shared, **scheduling per-person** | Two people's memories cannot share one interval. One pool of notes, `(note_id, user_id)` scheduling. Costs one column. |
+| D2 | Cards shared, **scheduling identity lives on the review log** | `card_state` stays keyed on `note_id` alone — decks are disjoint by language today, so no interval is actually shared. `reviews.user_id` is the one column that has to exist, because it is the only place "who reviewed this" is unrecoverable later. If overlap ever happens, `card_state` splits by replaying the log — see §4.3, §5. Resolved 2026-09-15. |
 | D3 | Migrate cards **and** review history | FSRS is on, so memory state ports directly. Mature cards stay mature. |
 | D4 | Same Supabase project as the bot | One Postgres, so the feedback loop into `/recap` is later a join, not an integration. |
 | D5 | One unified app, scanner included | Deletes the entire export/import surface. The reason the project is worth doing at all. |
@@ -139,7 +139,7 @@ Locked unless revisited deliberately.
 | D10 | No ingest review step | Scan, extract, import. Fixing happens in the reviewer instead — see D11. |
 | D11 | **Edit-in-place in the reviewer** | Consequence of D10. Without it there is no repair path at all — see §4.4. |
 | D12 | Suspend / bury / delete mid-review | Cheap, and the first thing that gets reached for with LLM-generated cards. |
-| D13 | Device token, not a login | Set once at install, lives in IndexedDB. Zero daily friction, works offline forever, and the collection is not world-readable — see §4.5. |
+| D13 | Device token, delivered once as a URL fragment | `https://app/#t=<token>` on first open; the app reads `location.hash`, stores the token in IndexedDB, then clears the fragment. Same one-tap install as "no login," but RLS can require the token and the Supabase anon key alone is then useless — see §4.5. Resolved 2026-09-15. |
 | D14 | Whisper scoring: right / close / wrong | Three buckets, honestly reflecting the precision the method has. |
 | D15 | Parallel-run with AnkiDroid | Migration therefore must be **idempotent and re-runnable**, which constrains the schema. |
 | D16 | Streamlit scanner stays alive until replaced | No capability gap during the build. |
@@ -269,9 +269,23 @@ specifically because the non-admin partner cannot judge where the text lands. A
 world-readable collection would be the one soft spot in an otherwise careful system.
 
 A device token preserves everything that was actually wanted — no login screen, no
-magic links, no token expiry, works offline forever — and removes the hole. Paste a
-secret once at install, store it in IndexedDB, send it with every request, validate it
-at the edge function.
+magic links, no token expiry, works offline forever — and removes the hole.
+
+**Mechanism, resolved 2026-09-15.** Installing is opening one link:
+`https://app/#t=<token>`. The token rides in the URL *fragment* deliberately — the
+fragment is never sent to the server on the initial request and is generally kept out
+of server access logs, unlike a query string. On load the app reads
+`location.hash`, writes the token into IndexedDB, and calls
+`history.replaceState` to strip it from the visible URL so it does not linger in
+browser history or get forwarded if the page is shared by accident. Every request
+after that carries the token in a header; an edge function validates it before
+touching Postgres, and RLS denies the anon role outright — so a leaked bundle (URL
+and anon key are always public in a client-side app) yields nothing on its own.
+
+Two tokens, not one, generated once and put in a password manager at setup: `TIM_TOKEN`
+and `VIKA_TOKEN`. Each install link encodes which user it belongs to, which is how the
+app knows who is reviewing without a login screen — see §5, `card_state`/`reviews`
+being scoped by `user_id` resolved from the token, not typed in.
 
 ---
 
@@ -291,10 +305,11 @@ notes (
   created_at    timestamptz
 );
 
--- Per-person. Never shared. A cache over `reviews` (§4.3).
+-- One row per note. A cache over `reviews` (§4.3), folded without regard to
+-- who reviewed — see D2. Correct as long as a note is only ever reviewed by
+-- one person, which decks being disjoint by language makes true today.
 card_state (
-  note_id       uuid,
-  user_id       uuid,
+  note_id       uuid primary key,
   due           date,
   stability     real,             -- FSRS memory state
   difficulty    real,             -- FSRS memory state
@@ -302,7 +317,13 @@ card_state (
   reps          integer,
   lapses        integer,
   suspended     boolean,
-  primary key (note_id, user_id)
+  -- Denormalized from the fold, not authoritative: whichever user_id last
+  -- appeared in `reviews` for this note. Lets the reviewer filter "my due
+  -- queue" without a join. If a note is ever reviewed by both users, this
+  -- column stops meaning anything and card_state must be split into a real
+  -- (note_id, user_id) table by replaying `reviews` — the escape hatch D2
+  -- exists for. Nothing about `reviews` itself has to change to do that.
+  last_user_id  uuid
 );
 
 -- Append-only. The sync primitive (§4.2). Never updated, never deleted.
