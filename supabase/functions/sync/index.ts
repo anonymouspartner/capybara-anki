@@ -24,6 +24,11 @@
  *   POST   /sync/suspend          → { noteId, suspended }
  *   PATCH  /sync/note/:id         → a partial NoteRow
  *   DELETE /sync/note/:id
+ *   GET    /sync/stats?days=N     → stats screen (step 6): a day-by-day activity
+ *                                    histogram over the last N days (default 30),
+ *                                    all-time success rate and streak, and the
+ *                                    collection's current state composition
+ *                                    (handlers.ts's getStats)
  *
  * Auth (D13, §4.5): a bearer token, one per person, read from `Deno.env.get` —
  * never hardcoded, never logged. `TIM_TOKEN`/`VIKA_TOKEN` name whose is whose;
@@ -36,6 +41,7 @@ import {
   editNote,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getStats,
   NotFoundError,
   setSuspended,
   submitReview,
@@ -88,6 +94,12 @@ class PostgresStore implements Store {
   getDailyCounts(_userId: string, _now: Date, _deck?: string): ReturnType<Store["getDailyCounts"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
+  getReviewsSince(_userId: string, _since: Date): ReturnType<Store["getReviewsSince"]> {
+    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
+  }
+  getCardStateCounts(_userId: string): ReturnType<Store["getCardStateCounts"]> {
+    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
+  }
   insertReview(_row: Parameters<Store["insertReview"]>[0]): ReturnType<Store["insertReview"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
@@ -136,6 +148,12 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
   if (req.method === "GET" && url.pathname === "/sync/due") {
     const deck = url.searchParams.get("deck") ?? undefined;
     return json(await getDueQueueWithPreviews(store, userId, new Date(), deck));
+  }
+
+  if (req.method === "GET" && url.pathname === "/sync/stats") {
+    const daysParam = Number(url.searchParams.get("days"));
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : undefined;
+    return json(await getStats(store, userId, new Date(), days));
   }
 
   if (req.method === "POST" && url.pathname === "/sync/review") {

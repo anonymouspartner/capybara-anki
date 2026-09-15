@@ -145,7 +145,10 @@ function renderDeckList() {
         </div>
       `).join("")
     }
-    <div id="session-footer">Studied ${state.sessionCount} card${state.sessionCount === 1 ? "" : "s"} this session</div>
+    <div id="session-footer">
+      Studied ${state.sessionCount} card${state.sessionCount === 1 ? "" : "s"} this session
+      · <a href="./stats.html">Stats</a>
+    </div>
   `;
   contentEl.querySelectorAll(".deck-row").forEach((row) => {
     row.addEventListener("click", () => enterDeck(row.dataset.deck));

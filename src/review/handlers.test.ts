@@ -5,6 +5,7 @@ import {
   getDeckSummaries,
   getDueQueue,
   getDueQueueWithPreviews,
+  getStats,
   NotFoundError,
   setSuspended,
   submitReview,
@@ -209,4 +210,31 @@ Deno.test("getDueQueueWithPreviews: respects deck scoping like getDueQueue", asy
 
   const cards = await getDueQueueWithPreviews(store, "tim", NOW, "Ukrainian");
   assertEquals(cards.map((c) => c.id), ["uk-1"]);
+});
+
+Deno.test("getStats: reflects reviews actually submitted through submitReview, end to end", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedConfig(store, "tim");
+
+  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
+
+  const stats = await getStats(store, "tim", NOW);
+  assertEquals(stats.totalReviews, 1);
+  assertEquals(stats.currentStreak, 1);
+  assertEquals(stats.successRate, 1);
+  // The reviewed note is no longer "new" — submitReview moved its card_state on.
+  assertEquals(stats.cardCounts.newCount, 0);
+});
+
+Deno.test("getStats: cardCounts covers every note regardless of review history", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedNote(store, "n2");
+  seedConfig(store, "tim");
+
+  const stats = await getStats(store, "tim", NOW);
+  assertEquals(stats.cardCounts.newCount, 2);
+  assertEquals(stats.totalReviews, 0);
+  assertEquals(stats.successRate, null);
 });
