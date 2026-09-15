@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Capybara — Scan</title>
+<link rel="stylesheet" href="theme.css" />
+<style>
+  /* Page-specific; the palette and toolbar chrome come from theme.css. */
+  #capture-label {
+    display: block;
+    margin: 24px 0;
+    padding: 22px;
+    text-align: center;
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    color: var(--fg-muted);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  #capture-label:active { background: var(--bg-toolbar); }
+  #status {
+    text-align: center;
+    color: var(--fg-muted);
+    font-size: 14px;
+    padding: 8px 0;
+  }
+  .scan-result {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .scan-result-label {
+    font-size: 13px;
+    color: var(--fg-muted);
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+  .scan-result-counts { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .scan-result-counts .imported { color: var(--stat-review); font-weight: 600; }
+  .scan-result-counts .rejected { color: var(--fg-muted); margin-left: 10px; }
+  .scan-result.scan-error .scan-result-counts { color: var(--btn-again); }
+  .scan-card { font-size: 14px; padding: 4px 0 0; border-top: 1px solid var(--border); margin-top: 6px; }
+  .scan-card:first-of-type { border-top: none; margin-top: 2px; }
+  #empty-hint { text-align: center; color: var(--fg-muted); padding: 40px 16px; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <a href="./" class="icon-btn">←</a>
+  <h1>Scan a page</h1>
+  <span style="width: 28px"></span>
+</div>
+<main>
+  <label id="capture-label" for="file-input">📷 Take or choose photos of a highlighted page</label>
+  <input type="file" id="file-input" accept="image/*" capture="environment" multiple hidden />
+  <div id="status" hidden></div>
+  <div id="results"></div>
+  <div id="empty-hint">Photograph a book page with yellow-highlighted words. Cards land straight in your Ukrainian deck — no export, no import.</div>
+</main>
+<script type="module" src="scan.js"></script>
+</body>
+</html>

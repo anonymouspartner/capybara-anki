@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "test": "deno test --allow-read --allow-env src/",
+    "check": "deno check src/**/*.ts"
+  },
+  "lock": "deno.lock",
+  "imports": {
+    "ts-fsrs": "npm:ts-fsrs@^4.7"
+  }
+}

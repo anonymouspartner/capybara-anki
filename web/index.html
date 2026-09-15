@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Capybara</title>
+<link rel="stylesheet" href="theme.css" />
+<style>
+  /* Palette matches AnkiDroid's own night theme as closely as CSS reasonably
+     allows: near-black surfaces at two elevations (toolbar/stats strip a shade
+     lighter than the card body), the same new/learning/review color convention
+     (blue/red/green), and the same button treatment (Again/Good/Easy solid-filled,
+     Hard visually quieter). Light mode is a straight inversion for anyone who
+     isn't in night mode — Anki supports both, so this does too. Color tokens and
+     toolbar chrome live in theme.css, shared with scan.html. */
+  #stats-strip {
+    display: flex;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Shared by the stats strip during review and the deck-list counts — both use
+     the same three classes, so the color rule has to apply to the class alone,
+     not scoped to one container (a bug the first render of this caught: scoped
+     to #stats-strip only, the deck list's identical spans rendered in plain
+     foreground text with no color at all). */
+  .new { color: var(--stat-new); }
+  .learning { color: var(--stat-learning); }
+  .review { color: var(--stat-review); }
+  /* A queued-but-not-yet-synced review count (offline, step 3 §6) — deliberately
+     not one of the three colors above, since it isn't a due-queue bucket. */
+  .pending { color: var(--fg-muted); margin-left: auto; }
+
+  /* Deck list */
+  .deck-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 4px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .deck-row:hover { background: var(--bg-toolbar); }
+  .deck-name { font-size: 16px; }
+  .deck-counts { display: flex; gap: 12px; font-size: 15px; font-variant-numeric: tabular-nums; }
+  #session-footer {
+    text-align: center;
+    color: var(--fg-muted);
+    font-size: 13px;
+    padding: 20px 0;
+  }
+
+  /* Card */
+  #card {
+    padding: 32px 4px;
+    text-align: center;
+    min-height: 55vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  #lemma { font-size: 30px; font-weight: 600; }
+  #back { display: none; flex-direction: column; gap: 8px; }
+  #back.visible { display: flex; }
+  hr.divider { width: 100%; border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+  .translation { font-size: 22px; }
+  .gloss { color: var(--fg-muted); }
+  .pos { font-size: 13px; color: var(--fg-muted); font-style: italic; }
+  .example { margin-top: 14px; }
+  .example-translation { color: var(--fg-muted); font-size: 15px; }
+
+  #answer-bar { position: fixed; bottom: 0; left: 0; right: 0; }
+  #reveal-btn {
+    width: 100%;
+    padding: 18px;
+    border: none;
+    background: var(--btn-reveal);
+    color: var(--btn-fg);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  #rating-row { display: flex; }
+  #rating-row button {
+    flex: 1;
+    border: none;
+    padding: 10px 4px 16px;
+    color: var(--btn-fg);
+    font-size: 15px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #rating-row .interval { font-size: 12px; opacity: 0.85; }
+  .rating-again { background: var(--btn-again); }
+  .rating-hard { background: var(--btn-hard-bg); color: var(--btn-hard-fg); }
+  .rating-good { background: var(--btn-good); }
+  .rating-easy { background: var(--btn-easy); }
+
+  #tools-row { display: flex; gap: 8px; justify-content: center; margin-top: 20px; }
+  #tools-row button {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg-muted);
+    font-size: 13px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+
+  #edit-form { display: none; flex-direction: column; gap: 10px; text-align: left; padding-top: 8px; }
+  #edit-form.visible { display: flex; }
+  #edit-form label { font-size: 12px; color: var(--fg-muted); }
+  #edit-form input {
+    width: 100%;
+    padding: 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-page);
+    color: var(--fg);
+    font-size: 14px;
+  }
+  #edit-errors { color: var(--btn-again); font-size: 13px; }
+
+  #empty, #error { text-align: center; padding: 60px 16px; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button id="back-btn" class="icon-btn" hidden>←</button>
+  <h1 id="title">Capybara</h1>
+  <a id="scan-link" class="icon-btn" href="./scan.html" hidden>📷</a>
+</div>
+<div id="stats-strip" hidden></div>
+<main id="content"><div id="loading" style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div></main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
