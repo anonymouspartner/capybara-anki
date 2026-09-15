@@ -1,0 +1,5 @@
+# Only real dependency: decompressing collection.anki21b, the zstd-compressed
+# collection database modern Anki exports carry. Everything else in migration/ is
+# stdlib (sqlite3, zipfile, json, dataclasses, uuid, datetime, argparse) — see
+# docs/DESIGN.md D7: this stays a plain local script, never a hosted service.
+zstandard>=0.22

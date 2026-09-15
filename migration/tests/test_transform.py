@@ -1,0 +1,175 @@
+from datetime import timedelta
+
+from migration.extract import NoteType, RawCard, RawNote, RawReview
+from migration.transform import (
+    compute_elapsed_days,
+    note_uuid,
+    review_uuid,
+    transform_card_state,
+    transform_note,
+    transform_review,
+)
+from migration.tests.fixtures import CAPYBARA_FIELDS, CAPYBARA_MID
+
+
+def _capybara_note_type():
+    return NoteType(mid=str(CAPYBARA_MID), name="Capybara", field_names=CAPYBARA_FIELDS)
+
+
+def _raw_note(**overrides):
+    defaults = dict(
+        id=1, guid="guid-aaa", mid=str(CAPYBARA_MID),
+        fields=["важкий", "hard", "hard (difficulty)", "adj", "uk",
+                "Це було важке завдання.", "It was a hard task."],
+        tags=[],
+    )
+    defaults.update(overrides)
+    return RawNote(**defaults)
+
+
+class TestTransformNote:
+    def test_recognized_capybara_note_transforms_cleanly(self):
+        note, skip_reason = transform_note(_raw_note(), _capybara_note_type())
+        assert skip_reason is None
+        assert note.lemma == "важкий"
+        assert note.language == "uk"
+        assert note.anki_guid == "guid-aaa"
+        assert note.source == "anki-import"
+        # audio is never in the export (media excluded) — see transform.py docstring
+        assert note.audio_url is None
+
+    def test_ids_are_deterministic_across_runs(self):
+        """§7.2 / D15: migration is re-run at least twice, so re-running on the same
+        export must produce the same note id, not a fresh random one each time."""
+        note1, _ = transform_note(_raw_note(), _capybara_note_type())
+        note2, _ = transform_note(_raw_note(), _capybara_note_type())
+        assert note1.id == note2.id == note_uuid("guid-aaa")
+
+    def test_different_guid_produces_a_different_id(self):
+        note_a, _ = transform_note(_raw_note(guid="guid-aaa"), _capybara_note_type())
+        note_b, _ = transform_note(_raw_note(guid="guid-bbb"), _capybara_note_type())
+        assert note_a.id != note_b.id
+
+    def test_unknown_note_type_is_skipped_not_guessed(self):
+        note, skip_reason = transform_note(_raw_note(), note_type=None)
+        assert note is None
+        assert "unknown note type" in skip_reason
+
+    def test_wrong_note_type_name_is_skipped(self):
+        wrong_type = NoteType(mid="99", name="Basic", field_names=["Front", "Back"])
+        note, skip_reason = transform_note(_raw_note(mid="99"), wrong_type)
+        assert note is None
+        assert "not 'Capybara'" in skip_reason
+
+    def test_reordered_fields_are_skipped_not_silently_misread(self):
+        """A field-order mismatch is exactly the failure mode that would otherwise
+        put a translation in the lemma column with no error anywhere."""
+        reordered = NoteType(
+            mid=str(CAPYBARA_MID), name="Capybara",
+            field_names=["gloss", "lemma", *CAPYBARA_FIELDS[2:]],
+        )
+        note, skip_reason = transform_note(_raw_note(), reordered)
+        assert note is None
+        assert "fields don't match" in skip_reason
+
+    def test_mismatched_field_count_is_skipped(self):
+        note, skip_reason = transform_note(
+            _raw_note(fields=["важкий", "hard"]), _capybara_note_type()
+        )
+        assert note is None
+        assert "malformed flds" in skip_reason
+
+
+class TestTransformCardState:
+    def test_new_card_has_no_due_date_and_no_fsrs_state(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0,
+                        reps=0, lapses=0, data={})
+        state, warnings = transform_card_state(card, note_id="n1", user_id="tim",
+                                                 collection_created_at=1_700_000_000)
+        assert state.due is None
+        assert state.stability is None
+        assert state.state == 0
+        assert warnings == []  # a new card having no FSRS state yet isn't a warning
+
+    def test_review_card_due_date_is_collection_creation_plus_due_days(self):
+        crt = 1_700_000_000  # a Tuesday-ish date, exact day doesn't matter
+        card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=2, due=30, ivl=10,
+                        reps=3, lapses=0, data={"s": 8.5, "d": 5.2})
+        state, warnings = transform_card_state(card, note_id="n1", user_id="tim",
+                                                 collection_created_at=crt)
+        from datetime import datetime, timezone
+        expected = datetime.fromtimestamp(crt, tz=timezone.utc).date() + timedelta(days=30)
+        assert state.due == expected
+        assert state.stability == 8.5
+        assert state.difficulty == 5.2
+        assert warnings == []
+
+    def test_suspended_card_is_flagged_regardless_of_type(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=-1, due=10, ivl=5,
+                        reps=2, lapses=1, data={"s": 3.0, "d": 4.0})
+        state, _ = transform_card_state(card, note_id="n1", user_id="tim",
+                                         collection_created_at=1_700_000_000)
+        assert state.suspended is True
+
+    def test_missing_fsrs_state_on_a_non_new_card_warns_instead_of_guessing(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=2, due=10, ivl=5,
+                        reps=2, lapses=0, data={})  # no "s"/"d" keys at all
+        state, warnings = transform_card_state(card, note_id="n1", user_id="tim",
+                                                 collection_created_at=1_700_000_000)
+        assert state.stability is None
+        assert state.difficulty is None
+        assert any("no FSRS memory state" in w for w in warnings)
+
+    def test_last_user_id_is_whoever_this_export_belongs_to(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0,
+                        reps=0, lapses=0, data={})
+        state, _ = transform_card_state(card, note_id="n1", user_id="vika",
+                                         collection_created_at=1_700_000_000)
+        assert state.last_user_id == "vika"
+
+
+class TestTransformReview:
+    def test_review_id_is_deterministic(self):
+        r1 = review_uuid(card_id=101, revlog_id=1_700_100_000_000)
+        r2 = review_uuid(card_id=101, revlog_id=1_700_100_000_000)
+        assert r1 == r2
+
+    def test_reviewed_at_comes_from_the_revlog_timestamp(self):
+        raw = RawReview(id=1_700_100_000_000, card_id=101, ease=3, ivl=10)
+        review = transform_review(raw, note_id="n1", user_id="tim", elapsed_days=1)
+        assert review.reviewed_at.year >= 2023  # 1.7e9 ms is late 2023
+        assert review.rating == 3
+        assert review.scheduled_days == 10
+        assert review.elapsed_days == 1
+
+    def test_negative_ivl_learning_step_floors_to_zero_scheduled_days(self):
+        """A negative Anki ivl means seconds (a same-day step), not a day count —
+        must never surface as a negative scheduled_days downstream."""
+        raw = RawReview(id=1_700_100_000_000, card_id=101, ease=2, ivl=-600)
+        review = transform_review(raw, note_id="n1", user_id="tim", elapsed_days=0)
+        assert review.scheduled_days == 0
+
+
+class TestComputeElapsedDays:
+    def test_first_review_has_zero_elapsed_days(self):
+        reviews = [RawReview(id=1_700_000_000_000, card_id=1, ease=3, ivl=1)]
+        elapsed = compute_elapsed_days(reviews)
+        assert elapsed[1_700_000_000_000] == 0
+
+    def test_second_review_one_day_later_is_elapsed_one(self):
+        one_day_ms = 86_400_000
+        reviews = [
+            RawReview(id=1_700_000_000_000, card_id=1, ease=3, ivl=1),
+            RawReview(id=1_700_000_000_000 + one_day_ms, card_id=1, ease=3, ivl=3),
+        ]
+        elapsed = compute_elapsed_days(reviews)
+        assert elapsed[1_700_000_000_000] == 0
+        assert elapsed[1_700_000_000_000 + one_day_ms] == 1
+
+    def test_reviews_same_day_elapse_zero_days(self):
+        reviews = [
+            RawReview(id=1_700_000_000_000, card_id=1, ease=2, ivl=0),
+            RawReview(id=1_700_000_060_000, card_id=1, ease=3, ivl=1),  # 1 min later
+        ]
+        elapsed = compute_elapsed_days(reviews)
+        assert elapsed[1_700_000_060_000] == 0

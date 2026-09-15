@@ -51,7 +51,7 @@ Inherited from `capybara-bot`, and they apply here too:
 
 | Step | State |
 |---|---|
-| 0 · Migration spike — read an export, report what is in it | not started |
+| 0 · Migration spike — read an export, report what is in it | **built, untested against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | not started |
 | 2 · Reviewer | not started |
 | 3 · Offline | not started |
@@ -60,3 +60,17 @@ Inherited from `capybara-bot`, and they apply here too:
 | 6 · Pronunciation, stats | not started |
 
 See §9 of the design doc for why the migration spike comes first.
+
+## Migration CLI
+
+`migration/` reads an Anki collection export and reports what's in it — read-only,
+never touches Postgres, never deployed (see `docs/DESIGN.md` D7). See
+[`migration/README.md`](migration/README.md) for how to get an export off a phone and
+run it.
+
+It's built and tested against synthetic fixtures (30 tests, CI-checked on every push),
+but **not yet run against a real collection** — the container-format assumption in
+`docs/DESIGN.md` §7.1 and the Anki-internals key names `migration/config.py` searches
+for are both still unverified against an actual file. That's the very next thing to
+do, and the code is written to fail loudly rather than guess if either assumption
+turns out wrong.

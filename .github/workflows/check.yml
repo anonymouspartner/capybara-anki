@@ -1,0 +1,52 @@
+name: check
+
+# Runs on every push and PR so a broken migration CLI is caught before it reaches
+# main. Every fixture is synthetic (migration/tests/fixtures.py) — this workflow
+# never touches a real collection export, needs no secrets, and makes no network
+# request beyond installing dependencies. Never add one.
+#
+# There is nothing else in this repo yet to check (docs/DESIGN.md, no application
+# code) — this workflow covers the migration CLI, step 0 of the build order (§9),
+# and grows to cover the reviewer/edge functions once those exist.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  migration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 matches this session's dev environment; 3.12 guards against the
+        # version a CI runner or the maintainer's machine may pick.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            migration/requirements.txt
+            migration/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r migration/requirements-dev.txt
+
+      # Catches a syntax error in any file, including one no test imports.
+      - name: Byte-compile every source file
+        run: python -m compileall -q migration
+
+      - name: Lint (unused imports, undefined names)
+        run: python -m pyflakes migration
+
+      - name: Run tests
+        run: python -m pytest migration/tests -v
