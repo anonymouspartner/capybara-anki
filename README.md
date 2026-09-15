@@ -57,7 +57,7 @@ Inherited from `capybara-bot`, and they apply here too:
 | 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
 | 2 · Reviewer (due queue, decks, interval previews, night theme) | **done** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) |
-| 3 · Offline | not started |
+| 3 · Offline (service worker, IndexedDB, queued reviews) | **done** — see [`web/offline.js`](web/offline.js) and [`web/sw.js`](web/sw.js) |
 | 4 · Real migration | not started |
 | 5 · Scanner | not started |
 | 6 · Pronunciation, stats | not started |
@@ -141,3 +141,29 @@ real bugs: `location.hash` includes its own leading `#`, which the token-capture
 code didn't account for, so a fresh install link never actually stored its token;
 and the stats-strip color rules were scoped to `#stats-strip` only, so the
 deck-list screen's identical count spans rendered without color. Both fixed.
+
+## Offline
+
+`web/offline.js` — an IndexedDB-backed queue for reviews submitted while offline
+(client-generated `reviewId`s make a re-flushed review an idempotent no-op) and a
+cache of the last-good response for every GET the app makes. `web/app.js`'s `api()`
+is the single place that falls back to either: a network failure on `POST
+/sync/review` queues instead of throwing, a failed GET returns its cached value.
+`web/sw.js` caches the static shell (`index.html`, `app.js`, `offline.js`)
+cache-first, and never intercepts `/sync/*` — API freshness stays `offline.js`'s job.
+
+Client-side FSRS scheduling was considered and deliberately not built: `web/` has no
+build step, and `ts-fsrs` has no build-step-free browser import, so replaying FSRS
+client-side would mean a second, hand-written scheduler drifting from
+`src/fsrs/replay.ts`. It turns out not to be needed — a deck's due queue already
+carries every card's interval preview (computed before going offline), so advancing
+through it offline needs no new scheduling math; only `card_state`'s eventual value
+depends on FSRS, and the queued review still produces that correctly once the real
+server-side replay processes it on reconnect. See `docs/DESIGN.md` §6.1 for the one
+accepted rough edge (a killed-and-reopened session offline can re-offer an
+already-answered card — an extra harmless review event, not a lost one).
+
+Verified with Playwright: an offline answer queues (pending count `⟳ 1` appears in
+the stats strip) and the session keeps advancing; dispatching `online` flushes the
+queue and the count clears; a full page reload while offline still renders the deck
+list, served from the service worker's cached shell and IndexedDB's cached data.

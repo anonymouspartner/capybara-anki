@@ -475,6 +475,9 @@ duplicated in `supabase/functions/sync/index.ts` and `web/demo-server.ts`.
 
 ## 6. Offline behaviour
 
+**Status: done.** `web/offline.js` (IndexedDB) + `web/sw.js` (service worker),
+wired through `web/app.js`'s `api()` — see §6.2 below.
+
 | Situation | Behaviour |
 |---|---|
 | Online, normal | Answer posts immediately, `card_state` updated server-side |
@@ -485,6 +488,54 @@ duplicated in `supabase/functions/sync/index.ts` and `web/demo-server.ts`.
 | Two devices, both offline | No conflict — the two users review disjoint decks (§9.1), and reviews are events, not mutations |
 
 Audio is the bulk of offline storage and needs an explicit caching policy — see §11.
+
+### 6.1 What "card_state updated locally" turned out to mean
+
+The original sketch above implied client-side FSRS scheduling while offline. Built
+narrower than that, deliberately: `web/` has no build step (§5.2), and `ts-fsrs`
+has no CDN-friendly browser build to import without one, so replaying FSRS
+client-side would mean either a build step this repo doesn't have or a second,
+hand-written scheduler implementation drifting from `src/fsrs/replay.ts` — exactly
+the kind of untested duplicate logic this whole build has avoided everywhere else.
+
+What's actually needed for "the session continues" turns out not to require it: a
+due queue is fetched once per deck entry, complete with every card's four-button
+interval preview (§5.2) computed *before* anything goes offline. Advancing through
+that already-fetched queue while offline needs no new scheduling math — only
+`card_state`'s *eventual* value depends on FSRS, and that's exactly what the queued
+review (replayed by the real server-side FSRS on reconnect, §4.3) still produces
+correctly. The one accepted rough edge: if the app is killed and reopened while
+still offline, the reloaded due queue comes from the IndexedDB cache taken *before*
+those offline reviews, so an already-answered card can be re-offered. Answering it
+again isn't wrong, just an extra real review event — reviewing the same card twice
+in one disconnected stretch is a harmless event, not a lost or corrupted one (§4.2).
+
+### 6.2 What's built
+
+- **`web/offline.js`** — two IndexedDB object stores: `pendingReviews` (reviews
+  submitted while offline, keyed by the client-generated `reviewId` so a duplicate
+  queue attempt is a no-op) and `cachedResponses` (the last good response for every
+  GET the app makes, keyed by path+query). Deliberately scoped to *reviews only* —
+  suspend/edit/delete aren't queued; each fails visibly if attempted offline rather
+  than queuing a mutation that could race a review of the same note.
+- **`web/app.js`'s `api()`** is the single point that decides when to fall back:
+  a `TypeError` from `fetch` (not a real non-2xx response, which still propagates)
+  means offline, at which point a queued `POST /sync/review` returns as if it
+  succeeded and a failed `GET` returns its last cached value instead of throwing.
+  Every call site (`submitRating`, `refreshStatsStrip`, `enterDeck`, …) is offline-
+  safe automatically as a result, rather than each needing its own try/catch.
+- **`flushPendingReviews()`** runs on the browser's `online` event and once at
+  startup if already online (covers the "closed the tab while offline, reopened it
+  online later" case) — posts each queued review in order, stopping at the first
+  failure rather than reordering around it, and refreshes the stats strip once done.
+- **A pending-sync count** (`⟳ N`) in the stats strip, so "did my answer actually
+  reach the server" is never silent — verified visually with Playwright: appears
+  after an offline answer, disappears once `online` fires and the flush completes.
+- **`web/sw.js`** caches the static shell (`index.html`, `app.js`, `offline.js`)
+  cache-first, and explicitly never intercepts `/sync/*` — API freshness is
+  `offline.js`'s job, not something to fake with an HTTP cache. Verified with
+  Playwright: a full page reload while offline (`context.setOffline(true)`) still
+  renders the deck list, sourced from IndexedDB's cached `/sync/decks` response.
 
 ---
 
@@ -645,7 +696,7 @@ the risk survivable.
 | **0** | Migration spike — read an export, print a report | **Done, verified against a real export (§7.5).** |
 | **1** | Schema + review log + FSRS replay, server-side | **Done.** Schema in `supabase/migrations/` (unapplied); replay in `src/fsrs/` (§5.1), tested including the replay-equals-incremental property. |
 | **2** | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place**, decks, interval previews | **Done.** Logic in `src/review/` (§5.2, 42 tests), HTTP surface in `supabase/functions/sync/` (routing + auth complete, `PostgresStore` not yet — needs a live project), UI in `web/` redesigned to match real AnkiDroid's night theme (verified end-to-end with Playwright against a local demo server). Not deployed. |
-| 3 | Offline: service worker, IndexedDB, queued reviews | Turns it into something that replaces AnkiDroid rather than supplements it. |
+| **3** | Offline: service worker, IndexedDB, queued reviews | **Done.** `web/sw.js` + `web/offline.js` (§6.2), verified with Playwright: an offline answer queues and shows a pending count, a reconnect flushes it, and a full page reload while offline still renders the cached deck list. Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Now there is somewhere for the data to land. |
 | 5 | Scanner: camera, canvas resize, `/scan` edge function | Deletes the export/import tax (§1.2). |
 | 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. |

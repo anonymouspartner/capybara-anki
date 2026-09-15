@@ -16,6 +16,13 @@
 // Auth (D13, §4.5): install is opening one link, `#t=<token>`. Read the fragment,
 // store the token, strip it from the visible URL and history so it never lingers
 // there or gets shared by accident — then send it as a bearer token on every call.
+//
+// Offline (step 3, §6): `offline.js` is the IndexedDB-backed review queue and
+// response cache; `api()` below is the one place that decides when to fall back to
+// it, so every call site (submitRating, refreshStatsStrip, enterDeck, …) stays
+// offline-safe automatically rather than each needing its own try/catch.
+
+import * as offline from "./offline.js";
 
 const TOKEN_KEY = "capybara-anki-token";
 
@@ -35,18 +42,40 @@ function getToken() {
 
 async function api(path, options = {}) {
   const token = getToken();
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      "content-type": "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-  if (!res.ok && res.status !== 400) {
-    throw new Error(`${options.method ?? "GET"} ${path} -> ${res.status}`);
+  const method = options.method ?? "GET";
+  try {
+    const res = await fetch(path, {
+      ...options,
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+    if (!res.ok && res.status !== 400) {
+      throw new Error(`${method} ${path} -> ${res.status}`);
+    }
+    const data = await res.json();
+    if (method === "GET") await offline.cacheResponse(path, data);
+    return data;
+  } catch (e) {
+    // A TypeError here is fetch itself failing (no network) — distinct from a real
+    // non-2xx response above, which propagates as-is (saveEdit()'s error-message
+    // path depends on that). Offline, a queued review or a cached GET keeps the
+    // session going instead of surfacing an error for something §6 says shouldn't
+    // interrupt a review session.
+    if (e instanceof TypeError) {
+      if (method === "POST" && path === "/sync/review") {
+        await offline.queueReview(JSON.parse(options.body));
+        return { ok: true, queued: true };
+      }
+      if (method === "GET") {
+        const cached = await offline.getCachedResponse(path);
+        if (cached !== undefined) return cached;
+      }
+    }
+    throw e;
   }
-  return res.json();
 }
 
 const contentEl = document.getElementById("content");
@@ -156,7 +185,7 @@ async function enterDeck(deck) {
     console.error(e);
     return;
   }
-  updateStatsStrip();
+  await updateStatsStrip();
   renderReview();
 }
 
@@ -164,17 +193,19 @@ function currentNote() {
   return state.queue[state.index] ?? null;
 }
 
-function updateStatsStrip() {
+async function updateStatsStrip() {
   const deckSummary = state.decks.find((d) => d.deck === state.currentDeck);
   if (!deckSummary) {
     statsStrip.hidden = true;
     return;
   }
+  const pending = await offline.pendingReviewCount();
   statsStrip.hidden = false;
   statsStrip.innerHTML = `
     <span class="new">${deckSummary.newCount}</span>
     <span class="learning">${deckSummary.learningCount}</span>
     <span class="review">${deckSummary.reviewCount}</span>
+    ${pending > 0 ? `<span class="pending">⟳ ${pending}</span>` : ""}
   `;
 }
 
@@ -182,11 +213,42 @@ function updateStatsStrip() {
  * Anki's live countdown, but by asking rather than guessing. An earlier version
  * of this tried to derive "was this card new or review" client-side from queue
  * position; that's exactly the kind of scheduling classification src/review/
- * already does correctly and the client has no business re-deriving badly. */
+ * already does correctly and the client has no business re-deriving badly.
+ * Offline, `api()` falls back to the last cached `/sync/decks` response, so this
+ * still renders something rather than throwing mid-session. */
 async function refreshStatsStrip() {
   state.decks = await api("/sync/decks");
-  updateStatsStrip();
+  await updateStatsStrip();
 }
+
+/** Pushes every locally-queued review to the server, oldest first, stopping at the
+ * first failure (still offline, or a genuine server error) rather than reordering
+ * around it — §6's "reconnect" row: the queue flushes as a batch, and a
+ * client-generated `reviewId` (already required by `/sync/review`) makes a review
+ * that already landed on a previous attempt a no-op instead of a duplicate. */
+async function flushPendingReviews() {
+  const pending = await offline.listPendingReviews();
+  for (const review of pending) {
+    const token = getToken();
+    if (!token) return;
+    let res;
+    try {
+      res = await fetch("/sync/review", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(review),
+      });
+    } catch {
+      return; // still offline — try again on the next 'online' event
+    }
+    if (!res.ok) return; // a real server error; stop rather than lose ordering
+    await offline.removePendingReview(review.reviewId);
+  }
+  if (state.view === "review") await refreshStatsStrip();
+  else if (state.view === "decks") await showDeckList();
+}
+
+globalThis.addEventListener("online", flushPendingReviews);
 
 function renderReview() {
   const note = currentNote();
@@ -342,6 +404,10 @@ async function main() {
     contentEl.innerHTML = `<div id="error">No access token. Open your install link again.</div>`;
     return;
   }
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch((e) => console.error("sw registration failed", e));
+  }
+  if (navigator.onLine) await flushPendingReviews(); // queued from a previous offline stretch
   await showDeckList();
 }
 

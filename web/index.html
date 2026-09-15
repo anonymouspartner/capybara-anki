@@ -93,6 +93,9 @@
   .new { color: var(--stat-new); }
   .learning { color: var(--stat-learning); }
   .review { color: var(--stat-review); }
+  /* A queued-but-not-yet-synced review count (offline, step 3 §6) — deliberately
+     not one of the three colors above, since it isn't a due-queue bucket. */
+  .pending { color: var(--fg-muted); margin-left: auto; }
   main { max-width: 480px; margin: 0 auto; padding: 0 16px; }
 
   /* Deck list */
