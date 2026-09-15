@@ -1,5 +1,14 @@
 import { assertEquals, assertRejects } from "jsr:@std/assert@^1";
-import { deleteNote, editNote, getDueQueue, NotFoundError, setSuspended, submitReview } from "./handlers.ts";
+import {
+  deleteNote,
+  editNote,
+  getDeckSummaries,
+  getDueQueue,
+  getDueQueueWithPreviews,
+  NotFoundError,
+  setSuspended,
+  submitReview,
+} from "./handlers.ts";
 import { InMemoryStore } from "./store.ts";
 import type { NoteRow, SchedulerConfigRow } from "./types.ts";
 
@@ -16,6 +25,7 @@ function seedNote(store: InMemoryStore, id: string, overrides: Partial<NoteRow> 
     example: null,
     exampleTranslation: null,
     audioUrl: null,
+    deck: "Ukrainian",
     ...overrides,
   });
 }
@@ -124,4 +134,79 @@ Deno.test("deleteNote: removes the note, its card_state, and its reviews", async
 Deno.test("deleteNote: deleting a note that doesn't exist raises NotFoundError", async () => {
   const store = new InMemoryStore();
   await assertRejects(() => deleteNote(store, "missing"), NotFoundError);
+});
+
+Deno.test("getDueQueue: scoping to one deck excludes notes in other decks", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian" });
+  seedNote(store, "en-1", { deck: "English" });
+  seedConfig(store, "tim");
+
+  const ukrainianQueue = await getDueQueue(store, "tim", NOW, "Ukrainian");
+  assertEquals(ukrainianQueue, ["uk-1"]);
+});
+
+Deno.test("getDueQueue: no deck argument combines every deck", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian" });
+  seedNote(store, "en-1", { deck: "English" });
+  seedConfig(store, "tim");
+
+  const combined = await getDueQueue(store, "tim", NOW);
+  assertEquals(new Set(combined), new Set(["uk-1", "en-1"]));
+});
+
+Deno.test("getDeckSummaries: one row per deck, counts matching what getDueQueue would offer", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian" });
+  seedNote(store, "uk-2", { deck: "Ukrainian" });
+  seedNote(store, "en-1", { deck: "English" });
+  seedConfig(store, "tim");
+
+  const summaries = await getDeckSummaries(store, "tim", NOW);
+  const byDeck = Object.fromEntries(summaries.map((s) => [s.deck, s]));
+
+  assertEquals(byDeck["Ukrainian"].newCount, 2);
+  assertEquals(byDeck["English"].newCount, 1);
+});
+
+Deno.test("getDeckSummaries: a deck's daily new limit is independent of another deck's", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian" });
+  seedNote(store, "en-1", { deck: "English" });
+  seedConfig(store, "tim", { dailyNewLimit: 1 });
+  // Use up Ukrainian's allowance only.
+  await submitReview(store, { reviewId: "r1", noteId: "uk-1", userId: "tim", rating: 3, reviewedAt: NOW });
+
+  const summaries = await getDeckSummaries(store, "tim", NOW);
+  const byDeck = Object.fromEntries(summaries.map((s) => [s.deck, s]));
+
+  assertEquals(byDeck["Ukrainian"].newCount, 0); // allowance used, and it's due tomorrow anyway
+  assertEquals(byDeck["English"].newCount, 1); // untouched
+});
+
+Deno.test("getDueQueueWithPreviews: attaches note content and a four-rating preview to each due card", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { lemma: "важкий", gloss: "hard" });
+  seedConfig(store, "tim");
+
+  const cards = await getDueQueueWithPreviews(store, "tim", NOW);
+  assertEquals(cards.length, 1);
+  assertEquals(cards[0].lemma, "важкий");
+  assertEquals(cards[0].gloss, "hard");
+  // Again <= Hard <= Good <= Easy, same invariant mutations.test.ts checks directly.
+  const { again, hard, good, easy } = cards[0].preview;
+  if (!(again.getTime() <= hard.getTime())) throw new Error("Again should not outlast Hard");
+  if (!(hard.getTime() <= good.getTime())) throw new Error("Hard should not outlast Good");
+  if (!(good.getTime() <= easy.getTime())) throw new Error("Good should not outlast Easy");
+});
+
+Deno.test("getDueQueueWithPreviews: respects deck scoping like getDueQueue", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian" });
+  seedNote(store, "en-1", { deck: "English" });
+  seedConfig(store, "tim");
+
+  const cards = await getDueQueueWithPreviews(store, "tim", NOW, "Ukrainian");
+  assertEquals(cards.map((c) => c.id), ["uk-1"]);
 });

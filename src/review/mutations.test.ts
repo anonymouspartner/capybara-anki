@@ -1,5 +1,5 @@
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@^1";
-import { buildReviewMutation, buildSuspendMutation, validateNoteEdit } from "./mutations.ts";
+import { buildReviewMutation, buildSuspendMutation, previewIntervals, validateNoteEdit } from "./mutations.ts";
 import type { CardStateRow } from "./types.ts";
 
 const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500 };
@@ -114,4 +114,43 @@ Deno.test("a real edit passes through untouched", () => {
 Deno.test("editing a field this function doesn't validate (e.g. gloss alone) is never blocked by it", () => {
   const result = validateNoteEdit({ gloss: "" });
   assertEquals(result.valid, true);
+});
+
+Deno.test("previewIntervals: a harder rating never schedules sooner than an easier one", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+  const preview = previewIntervals(null, now, PARAMS);
+  // Again <= Hard <= Good <= Easy — the one invariant that has to hold regardless
+  // of the exact FSRS weights, or the buttons would be lying about relative effort.
+  if (!(preview.again.getTime() <= preview.hard.getTime())) throw new Error("Again should not outlast Hard");
+  if (!(preview.hard.getTime() <= preview.good.getTime())) throw new Error("Hard should not outlast Good");
+  if (!(preview.good.getTime() <= preview.easy.getTime())) throw new Error("Good should not outlast Easy");
+});
+
+Deno.test("previewIntervals: computing a preview never writes anything — same input, same output twice", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+  const reviewed = newCardState({
+    stability: 8.5, difficulty: 5.2, state: 2, reps: 3,
+    lastReview: new Date("2025-12-28T00:00:00Z"),
+    due: new Date("2026-01-01T00:00:00Z"),
+  });
+  const first = previewIntervals(reviewed, now, PARAMS);
+  const second = previewIntervals(reviewed, now, PARAMS);
+  assertEquals(first, second);
+  // And the input itself is untouched.
+  assertEquals(reviewed.stability, 8.5);
+});
+
+Deno.test("previewIntervals: works on a genuinely new note (no card_state row at all)", () => {
+  const preview = previewIntervals(null, new Date("2026-01-01T00:00:00Z"), PARAMS);
+  if (!(preview.good.getTime() > 0)) throw new Error("expected a real date for Good on a new card");
+});
+
+Deno.test("previewIntervals: a row with FSRS fields set but no lastReview is treated as new, not a crash", () => {
+  // Shouldn't occur from buildReviewMutation (it always sets both together), but
+  // this is exactly the shape a hand-built or corrupted row could have, and
+  // ts-fsrs throws on a null date rather than treating it as "unknown" — this
+  // guards that at the boundary instead of propagating the crash.
+  const inconsistentRow = newCardState({ stability: 8.5, difficulty: 5.2, state: 2, reps: 3, lastReview: null });
+  const preview = previewIntervals(inconsistentRow, new Date("2026-01-01T00:00:00Z"), PARAMS);
+  if (!(preview.good.getTime() > 0)) throw new Error("expected a real date, not a thrown error");
 });

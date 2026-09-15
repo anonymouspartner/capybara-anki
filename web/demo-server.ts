@@ -19,12 +19,13 @@
 import {
   deleteNote,
   editNote,
-  getDueQueue,
+  getDeckSummaries,
+  getDueQueueWithPreviews,
   setSuspended,
   submitReview,
 } from "../src/review/handlers.ts";
 import { InMemoryStore } from "../src/review/store.ts";
-import type { NoteRow } from "../src/review/types.ts";
+import type { CardStateRow, NoteRow } from "../src/review/types.ts";
 
 const DEMO_TOKEN = "demo-token";
 const DEMO_USER = "demo-user";
@@ -41,29 +42,44 @@ store.schedulerConfigs.set(DEMO_USER, {
 });
 
 // Placeholder vocabulary only — never real corpus content. Chosen to exercise the
-// UI's actual field set, not to mean anything.
+// UI's actual field set (and, here, two decks) — not to mean anything.
 const demoNotes: NoteRow[] = [
   {
     id: "demo-1", lemma: "приклад", gloss: "example", lemmaTranslation: "example",
-    partOfSpeech: "noun", language: "uk",
+    partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
     example: "Це приклад речення.", exampleTranslation: "This is an example sentence.",
     audioUrl: null,
   },
   {
     id: "demo-2", lemma: "капібара", gloss: "capybara", lemmaTranslation: "capybara",
-    partOfSpeech: "noun", language: "uk",
+    partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
     example: "Капібара — найбільший гризун у світі.",
     exampleTranslation: "The capybara is the world's largest rodent.",
     audioUrl: null,
   },
   {
-    id: "demo-3", lemma: "hard", gloss: "difficult", lemmaTranslation: "важкий",
-    partOfSpeech: "adj", language: "en",
+    id: "demo-3", lemma: "again", gloss: "one more time", lemmaTranslation: "знову",
+    partOfSpeech: "adv", language: "uk", deck: "Ukrainian",
+    example: "Спробуй ще раз.", exampleTranslation: "Try again.",
+    audioUrl: null,
+  },
+  {
+    id: "demo-4", lemma: "hard", gloss: "difficult", lemmaTranslation: "важкий",
+    partOfSpeech: "adj", language: "en", deck: "English",
     example: "That was a hard question.", exampleTranslation: "Це було важке питання.",
     audioUrl: null,
   },
 ];
 for (const note of demoNotes) store.notes.set(note.id, note);
+
+// One already-reviewed, currently-due card and one suspended card, so the deck
+// list and review flow both have more than "all new" to show.
+const dueYesterday: CardStateRow = {
+  noteId: "demo-3", due: new Date(Date.now() - 86_400_000), stability: 4.2,
+  difficulty: 5.6, state: 2, reps: 2, lapses: 0,
+  lastReview: new Date(Date.now() - 5 * 86_400_000), suspended: false, lastUserId: DEMO_USER,
+};
+store.cardStates.set("demo-3", dueYesterday);
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -94,10 +110,12 @@ Deno.serve({ port: 8787 }, async (req) => {
 
   const noteId = url.pathname.match(/\/sync\/note\/([^/]+)$/)?.[1];
 
+  if (req.method === "GET" && url.pathname === "/sync/decks") {
+    return json(await getDeckSummaries(store, DEMO_USER, new Date()));
+  }
   if (req.method === "GET" && url.pathname === "/sync/due") {
-    const ids = await getDueQueue(store, DEMO_USER, new Date());
-    const notes = await Promise.all(ids.map((id) => store.getNote(id)));
-    return json(notes.filter((n): n is NoteRow => n !== null));
+    const deck = url.searchParams.get("deck") ?? undefined;
+    return json(await getDueQueueWithPreviews(store, DEMO_USER, new Date(), deck));
   }
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();

@@ -5,9 +5,15 @@
  * parses a `Request`, calls one of these, and serializes the result.
  */
 
-import { selectDueQueue } from "./dueQueue.ts";
-import { buildReviewMutation, buildSuspendMutation, validateNoteEdit } from "./mutations.ts";
-import type { NoteRow, ReviewInput, SchedulerConfigRow } from "./types.ts";
+import { selectDueQueue, summarizeDueQueue } from "./dueQueue.ts";
+import {
+  buildReviewMutation,
+  buildSuspendMutation,
+  type IntervalPreview,
+  previewIntervals,
+  validateNoteEdit,
+} from "./mutations.ts";
+import type { NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
 import type { Store } from "./store.ts";
 
@@ -19,14 +25,20 @@ function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
   };
 }
 
-/** GET the due queue: note ids only, in review order. The caller fetches each
- * note's fields separately (or the HTTP layer batches it) — this function's job
- * stops at "what order," matching dueQueue.ts's own scope. */
-export async function getDueQueue(store: Store, userId: string, now: Date): Promise<string[]> {
+/** GET the due queue: note ids only, in review order, optionally scoped to one
+ * deck. The caller fetches each note's fields separately (or the HTTP layer
+ * batches it) — this function's job stops at "what order," matching dueQueue.ts's
+ * own scope. */
+export async function getDueQueue(
+  store: Store,
+  userId: string,
+  now: Date,
+  deck?: string,
+): Promise<string[]> {
   const [candidates, config, counts] = await Promise.all([
-    store.getDueCandidates(userId),
+    store.getDueCandidates(userId, deck),
     store.getSchedulerConfig(userId),
-    store.getDailyCounts(userId, now),
+    store.getDailyCounts(userId, now, deck),
   ]);
   return selectDueQueue(
     candidates,
@@ -34,6 +46,59 @@ export async function getDueQueue(store: Store, userId: string, now: Date): Prom
     counts,
     now,
   );
+}
+
+export interface DeckSummary extends QueueSummary {
+  deck: string;
+}
+
+/** GET the deck-list screen's row set: every deck this user has notes in, each
+ * with its own new/learning/review counts. One `getDueCandidates` round trip per
+ * deck rather than one big query filtered client-side — simpler to keep correct
+ * as `getDailyCounts`/`getDueCandidates` evolve, and there are a handful of decks,
+ * not thousands. */
+export async function getDeckSummaries(store: Store, userId: string, now: Date): Promise<DeckSummary[]> {
+  const [decks, config] = await Promise.all([store.getDecks(userId), store.getSchedulerConfig(userId)]);
+  const limits = { dailyNewLimit: config.dailyNewLimit, dailyReviewLimit: config.dailyReviewLimit };
+
+  return Promise.all(
+    decks.map(async (deck) => {
+      const [candidates, counts] = await Promise.all([
+        store.getDueCandidates(userId, deck),
+        store.getDailyCounts(userId, now, deck),
+      ]);
+      return { deck, ...summarizeDueQueue(candidates, limits, counts, now) };
+    }),
+  );
+}
+
+export interface DueCard extends NoteRow {
+  preview: IntervalPreview;
+}
+
+/** GET the due queue with each card's content and interval preview attached — what
+ * the reviewer UI actually renders. Built on `getDueQueue` for ordering, then one
+ * `getNote`/`getCardState` round trip per card to assemble the response; this is the
+ * single place that logic lives, replacing what would otherwise be duplicated
+ * between `supabase/functions/sync/index.ts` and `web/demo-server.ts`. */
+export async function getDueQueueWithPreviews(
+  store: Store,
+  userId: string,
+  now: Date,
+  deck?: string,
+): Promise<DueCard[]> {
+  const [ids, config] = await Promise.all([
+    getDueQueue(store, userId, now, deck),
+    store.getSchedulerConfig(userId),
+  ]);
+  const params = toFsrsParams(config);
+
+  const cards = await Promise.all(ids.map(async (id) => {
+    const [note, cardState] = await Promise.all([store.getNote(id), store.getCardState(id)]);
+    if (!note) return null;
+    return { ...note, preview: previewIntervals(cardState, now, params) };
+  }));
+  return cards.filter((c): c is DueCard => c !== null);
 }
 
 export class NotFoundError extends Error {}

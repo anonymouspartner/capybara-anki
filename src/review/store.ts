@@ -20,10 +20,17 @@ export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
   getCardState(noteId: string): Promise<CardStateRow | null>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
-  /** Every note this user's due queue could possibly include — language/deck
-   * scoping happens here, not in dueQueue.ts, which only knows scheduling. */
-  getDueCandidates(userId: string): Promise<DueCandidate[]>;
-  getDailyCounts(userId: string, now: Date): Promise<DailyCounts>;
+  /** Every deck name with at least one note this user can review — the deck-list
+   * screen's row set. */
+  getDecks(userId: string): Promise<string[]>;
+  /** Every note this user's due queue could possibly include, optionally narrowed
+   * to one deck (undefined = every deck combined). Deck/language scoping happens
+   * here, not in dueQueue.ts, which only knows scheduling. */
+  getDueCandidates(userId: string, deck?: string): Promise<DueCandidate[]>;
+  /** Daily new/review counts so far, scoped the same way as `getDueCandidates` —
+   * each deck gets its own daily allowance against the one shared
+   * `scheduler_config` limit, not one allowance split across every deck. */
+  getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts>;
 
   insertReview(row: ReviewRow): Promise<void>;
   upsertCardState(row: CardStateRow): Promise<void>;
@@ -62,13 +69,18 @@ export class InMemoryStore implements Store {
     return Promise.resolve(config);
   }
 
-  getDueCandidates(_userId: string): Promise<DueCandidate[]> {
-    // The in-memory fixture doesn't model per-user deck scoping (§9.1's "decks are
-    // disjoint by language" assumption) — tests construct exactly the candidate set
-    // they want to see, which is the right level of fidelity for handlers.ts's own
-    // tests. A PostgresStore's version of this method is where that scoping lives.
+  getDecks(_userId: string): Promise<string[]> {
+    // The in-memory fixture doesn't model per-user access at all (§9.1's "decks are
+    // disjoint by language" assumption) — tests construct exactly the note set they
+    // want to see. A PostgresStore's version of this method is where per-user
+    // access actually gets enforced.
+    return Promise.resolve([...new Set([...this.notes.values()].map((n) => n.deck))]);
+  }
+
+  getDueCandidates(_userId: string, deck?: string): Promise<DueCandidate[]> {
     const candidates: DueCandidate[] = [];
     for (const note of this.notes.values()) {
+      if (deck !== undefined && note.deck !== deck) continue;
       const state = this.cardStates.get(note.id);
       candidates.push({
         noteId: note.id,
@@ -80,13 +92,14 @@ export class InMemoryStore implements Store {
     return Promise.resolve(candidates);
   }
 
-  getDailyCounts(userId: string, now: Date): Promise<DailyCounts> {
+  getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     let newTakenToday = 0;
     let reviewTakenToday = 0;
     for (const review of this.reviews.values()) {
       if (review.userId !== userId) continue;
       if (review.reviewedAt.getTime() < dayStart.getTime()) continue;
+      if (deck !== undefined && this.notes.get(review.noteId)?.deck !== deck) continue;
       const stateAtSubmission = this.reviewStateAtSubmission.get(review.id);
       if (stateAtSubmission === null || stateAtSubmission === 0 || stateAtSubmission === undefined) {
         newTakenToday++;

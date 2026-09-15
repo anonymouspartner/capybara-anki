@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@^1";
-import { selectDueQueue } from "./dueQueue.ts";
+import { selectDueQueue, summarizeDueQueue } from "./dueQueue.ts";
 import type { DueCandidate } from "./types.ts";
 
 const NOW = new Date("2026-09-16T12:00:00Z");
@@ -122,4 +122,30 @@ Deno.test("daily review limit caps overdue review cards but never touches learni
   // of the two review-state cards fits inside dailyReviewLimit: 1.
   assertEquals(result.length, 2);
   assertEquals(result[0], "learning-1");
+});
+
+Deno.test("summarizeDueQueue: counts match what selectDueQueue would actually offer", () => {
+  const candidates = [
+    candidate({ noteId: "learning-1", state: 1, due: YESTERDAY }),
+    candidate({ noteId: "review-1", state: 2, due: YESTERDAY }),
+    candidate({ noteId: "review-2", state: 2, due: TOMORROW }), // not due yet
+    candidate({ noteId: "new-1", state: null }),
+    candidate({ noteId: "new-2", state: null }),
+    candidate({ noteId: "suspended-1", state: 2, due: YESTERDAY, suspended: true }),
+  ];
+  const summary = summarizeDueQueue(candidates, GENEROUS_LIMITS, NO_LIMITS_TAKEN, NOW);
+  const queue = selectDueQueue(candidates, GENEROUS_LIMITS, NO_LIMITS_TAKEN, NOW);
+
+  assertEquals(summary, { learningCount: 1, reviewCount: 1, newCount: 2 });
+  assertEquals(queue.length, summary.learningCount + summary.reviewCount + summary.newCount);
+});
+
+Deno.test("summarizeDueQueue: respects the same daily limits selectDueQueue does", () => {
+  const summary = summarizeDueQueue(
+    [candidate({ noteId: "new-1", state: null }), candidate({ noteId: "new-2", state: null })],
+    { dailyNewLimit: 1, dailyReviewLimit: 100 },
+    NO_LIMITS_TAKEN,
+    NOW,
+  );
+  assertEquals(summary.newCount, 1);
 });

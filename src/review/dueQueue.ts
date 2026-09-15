@@ -6,8 +6,7 @@
  * order" and "review order" settings, configurable new/review mixing), and nothing
  * in docs/DESIGN.md commits to reproducing it. The policy here is deliberately
  * simple and stated plainly so it can be changed later without touching the data
- * model at all — `selectDueQueue` only reads `DueCandidate`/`QueueLimits`/
- * `DailyCounts`, all already-public shapes:
+ * model at all — everything below only reads already-public row shapes:
  *
  *   1. Learning/relearning cards due now (state 1 or 3) — these are mid-relearning
  *      short-interval steps; leaving them mixed in with everything else would let a
@@ -19,18 +18,28 @@
  *
  * All three respect `suspended` (excluded outright) and "due now" (a card due
  * tomorrow doesn't show up early just because the queue is thin today).
+ *
+ * `selectDueQueue` (an ordered id list, for reviewing) and `summarizeDueQueue` (bucket
+ * counts, for a deck-list screen) share the same categorization on purpose — a deck
+ * row showing "3 new, 1 due" has to agree with what pressing into that deck actually
+ * offers, or the two would drift apart the first time this policy changes.
  */
 
-import type { DailyCounts, DueCandidate, QueueLimits } from "./types.ts";
+import type { DailyCounts, DueCandidate, QueueLimits, QueueSummary } from "./types.ts";
 
-export function selectDueQueue(
+interface Categorized {
+  learning: DueCandidate[];
+  review: DueCandidate[];
+  newCards: DueCandidate[];
+}
+
+function categorize(
   candidates: DueCandidate[],
   limits: QueueLimits,
   counts: DailyCounts,
   now: Date,
-): string[] {
+): Categorized {
   const eligible = candidates.filter((c) => !c.suspended);
-
   const isDueNow = (c: DueCandidate) => c.due !== null && c.due.getTime() <= now.getTime();
 
   const learning = eligible
@@ -40,16 +49,38 @@ export function selectDueQueue(
   const review = eligible
     .filter((c) => c.state === 2 && isDueNow(c))
     .sort(byDueAscending);
-
   const remainingReviewSlots = Math.max(limits.dailyReviewLimit - counts.reviewTakenToday, 0);
-  const reviewTaken = review.slice(0, remainingReviewSlots);
 
   const remainingNewSlots = Math.max(limits.dailyNewLimit - counts.newTakenToday, 0);
-  const newCards = eligible
-    .filter((c) => c.state === null || c.state === 0)
-    .slice(0, remainingNewSlots);
+  const newCards = eligible.filter((c) => c.state === null || c.state === 0);
 
-  return [...learning, ...reviewTaken, ...newCards].map((c) => c.noteId);
+  return {
+    learning,
+    review: review.slice(0, remainingReviewSlots),
+    newCards: newCards.slice(0, remainingNewSlots),
+  };
+}
+
+export function selectDueQueue(
+  candidates: DueCandidate[],
+  limits: QueueLimits,
+  counts: DailyCounts,
+  now: Date,
+): string[] {
+  const { learning, review, newCards } = categorize(candidates, limits, counts, now);
+  return [...learning, ...review, ...newCards].map((c) => c.noteId);
+}
+
+/** Same categorization as `selectDueQueue`, as counts — what a deck-list row shows
+ * without pulling every note's content just to count them. */
+export function summarizeDueQueue(
+  candidates: DueCandidate[],
+  limits: QueueLimits,
+  counts: DailyCounts,
+  now: Date,
+): QueueSummary {
+  const { learning, review, newCards } = categorize(candidates, limits, counts, now);
+  return { learningCount: learning.length, reviewCount: review.length, newCount: newCards.length };
 }
 
 function byDueAscending(a: DueCandidate, b: DueCandidate): number {

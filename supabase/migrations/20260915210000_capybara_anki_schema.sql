@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS "public"."notes" (
     "example_translation" "text",
     "audio_url" "text",
     "source" "text" DEFAULT 'bot' NOT NULL,
+    -- Free-text label, not a foreign key to a decks table — Anki itself treats a
+    -- deck as just a path string on a card, and the reviewer (src/review/types.ts's
+    -- NoteRow) needs no more than that. Added after the fact, once a real look at
+    -- AnkiDroid's own deck list (Ukrainian / English / Grammar / Spelling /
+    -- Pronunciation) made "browse by deck" look core rather than a detail; default
+    -- keeps this column additive for any row inserted before the app had decks.
+    "deck" "text" DEFAULT 'Ukrainian' NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "notes_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "notes_anki_guid_key" UNIQUE ("anki_guid"),

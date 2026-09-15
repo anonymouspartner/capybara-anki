@@ -10,10 +10,16 @@
  * exists so the real wiring is visible and reviewable now, not so it ships today.
  *
  * Routes:
- *   GET    /sync/due              → this user's due queue, full note content, in
- *                                    review order (dueQueue.ts decides the order;
- *                                    this just also fetches what the reviewer needs
- *                                    to render each card without a second request)
+ *   GET    /sync/decks            → deck-list screen: every deck this user has
+ *                                    notes in, with its own new/learning/review
+ *                                    counts (handlers.ts's getDeckSummaries)
+ *   GET    /sync/due?deck=X       → this user's due queue for deck X (or every
+ *                                    deck combined, with no ?deck), full note
+ *                                    content plus each card's four-button interval
+ *                                    preview, in review order (dueQueue.ts decides
+ *                                    the order; getDueQueueWithPreviews fetches what
+ *                                    the reviewer needs to render each card without
+ *                                    a second request)
  *   POST   /sync/review           → { reviewId, noteId, rating, reviewedAt }
  *   POST   /sync/suspend          → { noteId, suspended }
  *   PATCH  /sync/note/:id         → a partial NoteRow
@@ -28,12 +34,12 @@
 import {
   deleteNote,
   editNote,
-  getDueQueue,
+  getDeckSummaries,
+  getDueQueueWithPreviews,
   NotFoundError,
   setSuspended,
   submitReview,
 } from "../../../src/review/handlers.ts";
-import type { NoteRow } from "../../../src/review/types.ts";
 import type { Store } from "../../../src/review/store.ts";
 
 // ---------------------------------------------------------------------------
@@ -88,10 +94,13 @@ class PostgresStore implements Store {
   getSchedulerConfig(_userId: string): ReturnType<Store["getSchedulerConfig"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
-  getDueCandidates(_userId: string): ReturnType<Store["getDueCandidates"]> {
+  getDecks(_userId: string): ReturnType<Store["getDecks"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
-  getDailyCounts(_userId: string, _now: Date): ReturnType<Store["getDailyCounts"]> {
+  getDueCandidates(_userId: string, _deck?: string): ReturnType<Store["getDueCandidates"]> {
+    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
+  }
+  getDailyCounts(_userId: string, _now: Date, _deck?: string): ReturnType<Store["getDailyCounts"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
   insertReview(_row: Parameters<Store["insertReview"]>[0]): ReturnType<Store["insertReview"]> {
@@ -121,16 +130,6 @@ function getStore(): Store {
 }
 
 // ---------------------------------------------------------------------------
-// Due-queue response shape — full note content, not just ids (see module docstring)
-// ---------------------------------------------------------------------------
-
-async function buildDueQueueResponse(store: Store, userId: string, now: Date): Promise<NoteRow[]> {
-  const noteIds = await getDueQueue(store, userId, now);
-  const notes = await Promise.all(noteIds.map((id) => store.getNote(id)));
-  return notes.filter((n): n is NoteRow => n !== null);
-}
-
-// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -145,8 +144,13 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
   const url = new URL(req.url);
   const noteIdFromPath = url.pathname.match(/\/sync\/note\/([^/]+)$/)?.[1];
 
+  if (req.method === "GET" && url.pathname === "/sync/decks") {
+    return json(await getDeckSummaries(store, userId, new Date()));
+  }
+
   if (req.method === "GET" && url.pathname === "/sync/due") {
-    return json(await buildDueQueueResponse(store, userId, new Date()));
+    const deck = url.searchParams.get("deck") ?? undefined;
+    return json(await getDueQueueWithPreviews(store, userId, new Date(), deck));
   }
 
   if (req.method === "POST" && url.pathname === "/sync/review") {

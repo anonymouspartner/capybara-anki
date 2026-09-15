@@ -56,7 +56,7 @@ Inherited from `capybara-bot`, and they apply here too:
 |---|---|
 | 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
-| 2 · Reviewer | **done** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) |
+| 2 · Reviewer (due queue, decks, interval previews, night theme) | **done** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) |
 | 3 · Offline | not started |
 | 4 · Real migration | not started |
 | 5 · Scanner | not started |
@@ -107,7 +107,7 @@ reading a real export during the migration spike.
 
 `src/review/` — due-queue selection (`dueQueue.ts`), the four D12 actions as pure
 state transitions (`mutations.ts`), and the HTTP-shaped operations that wrap them
-over a storage interface (`handlers.ts`, `store.ts`). 20 tests, all against
+over a storage interface (`handlers.ts`, `store.ts`). 42 tests, all against
 `InMemoryStore` — same reasoning as everywhere else in this repo: a `PostgresStore`
 untested against a live project would be guessed code, so it isn't written yet
 (see `supabase/functions/sync/index.ts`'s own comment on this).
@@ -118,15 +118,26 @@ is a stub). `web/` is the reviewer UI itself: plain HTML/JS, no build step, sinc
 every scheduling decision happens server-side and the browser's job is just
 fetch → render → post an answer → next card.
 
+**Redesigned to match real AnkiDroid's night theme**, after seeing actual
+screenshots of it: a deck-list landing screen (Ukrainian/English, each with its own
+new/learning/review counts) in front of the review screen, the same near-black
+two-elevation surfaces and blue/red/green count convention, and each of the four
+rating buttons showing the interval it would produce ("5m", "7d", "1.3mo") —
+computed by `previewIntervals` (`mutations.ts`) running the scheduler forward
+without saving the result, attached to each due card by `getDueQueueWithPreviews`
+(`handlers.ts`) in the same response that carries its content.
+
 Verified by running it, not just asserting it works:
 
 ```bash
 deno run --allow-net --allow-read web/demo-server.ts
-# open the printed URL — it's a local demo backed by three placeholder notes,
-# never real corpus content, exercising the same handlers.ts the real app uses
+# open the printed URL — it's a local demo backed by placeholder notes across two
+# decks, never real corpus content, exercising the same handlers.ts the real app uses
 ```
 
-A full click-through (reveal → rate → advance → edit → save → suspend) was driven
-with Playwright against that server. It caught one real bug on the first run:
-`location.hash` includes its own leading `#`, which the token-capture code didn't
-account for, so a fresh install link never actually stored its token. Fixed.
+A full click-through (deck list → reveal → rate → advance → edit → save → suspend)
+was driven with Playwright against that server, dark mode included. It caught two
+real bugs: `location.hash` includes its own leading `#`, which the token-capture
+code didn't account for, so a fresh install link never actually stored its token;
+and the stats-strip color rules were scoped to `#stats-strip` only, so the
+deck-list screen's identical count spans rendered without color. Both fixed.

@@ -21,9 +21,17 @@ import type { CardStateRow, NoteRow, ReviewInput, ReviewRow } from "./types.ts";
 const MS_PER_DAY = 86_400_000;
 
 function toFsrsCardState(row: CardStateRow): FsrsCardState | null {
-  if (row.state === null || row.stability === null || row.difficulty === null) {
+  if (
+    row.state === null || row.stability === null || row.difficulty === null ||
+    row.lastReview === null || row.due === null
+  ) {
     // A row with FSRS fields still null (e.g. suspended-before-first-review) is
-    // "new" to the scheduler, identically to no row existing at all.
+    // "new" to the scheduler, identically to no row existing at all. `lastReview`
+    // and `due` are checked too, defensively: a real row from buildReviewMutation
+    // always sets every one of these together, but ts-fsrs throws on a null date
+    // rather than treating it as "unknown," and this function's job is to never
+    // hand it one — caught by a test building exactly that (otherwise impossible)
+    // partially-null shape.
     return null;
   }
   return {
@@ -149,4 +157,26 @@ export function validateNoteEdit(patch: Partial<Omit<NoteRow, "id">>): NoteEditR
   }
 
   return errors.length > 0 ? { valid: false, errors } : { valid: true, errors: [], patch };
+}
+
+/** The interval each of the four ratings would produce, computed without writing
+ * anything — the number AnkiDroid shows above each button (its own "<10m" /
+ * "4.1mo" style). `applyReview` is pure, so running it four times against the
+ * same `current` and throwing three of the results away is the whole
+ * implementation; there's no separate "preview mode" in the scheduler to call. */
+export interface IntervalPreview {
+  again: Date;
+  hard: Date;
+  good: Date;
+  easy: Date;
+}
+
+export function previewIntervals(
+  current: CardStateRow | null,
+  now: Date,
+  params: FsrsSchedulerParams,
+): IntervalPreview {
+  const priorFsrsState = current ? toFsrsCardState(current) : null;
+  const due = (rating: 1 | 2 | 3 | 4) => applyReview(priorFsrsState, { reviewedAt: now, rating }, params).due;
+  return { again: due(1), hard: due(2), good: due(3), easy: due(4) };
 }

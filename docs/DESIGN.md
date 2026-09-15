@@ -309,6 +309,11 @@ notes (
   part_of_speech, language, example, example_translation,
   audio_url     text,
   source        text,             -- 'scan' | 'bot' | 'anki-import'
+  -- Free-text label, not a foreign key to a decks table — Anki itself treats a
+  -- deck as just a path string on a card, and nothing here needs more than
+  -- that. Added after the fact (§5.2), once real AnkiDroid screenshots made
+  -- "browse by deck" look core to how this is actually used, not a detail.
+  deck          text default 'Ukrainian',
   created_at    timestamptz
 );
 
@@ -398,7 +403,7 @@ so replay never touches it; a caller merges the fold's output with whatever
 
 ### 5.2 `src/review/` — the reviewer's server-side logic, step 2
 
-Built and tested (`src/review/*.test.ts`, 20 tests) ahead of any UI, same order as
+Built and tested (`src/review/*.test.ts`, 42 tests) ahead of any UI, same order as
 every other step in this build: get the logic right and verified first, wire a
 surface onto it second. `web/` (below) is that surface.
 
@@ -433,13 +438,38 @@ twice.
 **`web/`** is the reviewer UI — plain HTML/JS, no build step, since every bit of
 scheduling logic lives server-side and the browser's whole job is fetch → render →
 post an answer → next card. Verified by actually running it: `web/demo-server.ts`
-serves the same JSON shapes `/sync` would, backed by `InMemoryStore` and three
-placeholder vocabulary notes (never real corpus content), and a full click-through
-— reveal, rate, advance, edit, save, suspend — was driven with Playwright rather
-than left as "should work." That run caught one real bug: `location.hash` includes
-its leading `#`, which the token-capture code's `URLSearchParams` call didn't
-account for, so a fresh install link never actually stored its token. Fixed and
-re-verified.
+serves the same JSON shapes `/sync` would, backed by `InMemoryStore` and placeholder
+vocabulary notes (never real corpus content), and a full click-through — reveal,
+rate, advance, edit, save, suspend — was driven with Playwright rather than left as
+"should work." That run caught one real bug: `location.hash` includes its leading
+`#`, which the token-capture code's `URLSearchParams` call didn't account for, so a
+fresh install link never actually stored its token. Fixed and re-verified.
+
+**Redesigned to match real AnkiDroid, once actual screenshots of it existed to copy
+rather than guess at.** `web/index.html`'s CSS now uses AnkiDroid's own night-theme
+palette (near-black surfaces at two elevations, the blue/red/green new-learning-
+review convention, Again/Good/Easy solid-filled with Hard visually quieter) with a
+light-mode inversion via `prefers-color-scheme`; `web/app.js` gained a deck-list
+landing screen (one row per deck, its own three counts) in front of the review
+screen, rather than dropping straight into one combined queue. This is also where
+`notes.deck` (above) and `QueueSummary`/`getDeckSummaries` (`src/review/handlers.ts`)
+came from — the schema had no deck concept until the redesign made "browse by deck"
+look load-bearing rather than cosmetic. Only Ukrainian and English are shown, not
+real AnkiDroid's full five-deck list: Grammar/Spelling/Pronunciation are different
+card shapes entirely (§7.5 finding 5, §11), not a rendering gap.
+
+Real AnkiDroid also shows, above each of the four rating buttons, the interval that
+rating would produce ("<10m", "4.1mo") — a preview, not a commitment, computed by
+running the scheduler forward without saving the result. `previewIntervals`
+(`src/review/mutations.ts`) is exactly that: `applyReview` is already pure, so
+calling it four times against the same starting state and keeping all four results
+(instead of one) is the whole implementation, with a null-safe path for a
+never-reviewed card (`toFsrsCardState`'s guard, hardened by a test that found it
+crashing on a hand-built partially-null row rather than treating it as "new").
+`getDueQueueWithPreviews` (`handlers.ts`) attaches one to each due card in the same
+response that carries its content, so `web/app.js` renders both without a second
+round trip; this replaced a `buildDueQueueResponse` that had been separately
+duplicated in `supabase/functions/sync/index.ts` and `web/demo-server.ts`.
 
 ---
 
@@ -614,7 +644,7 @@ the risk survivable.
 |---|---|---|
 | **0** | Migration spike — read an export, print a report | **Done, verified against a real export (§7.5).** |
 | **1** | Schema + review log + FSRS replay, server-side | **Done.** Schema in `supabase/migrations/` (unapplied); replay in `src/fsrs/` (§5.1), tested including the replay-equals-incremental property. |
-| **2** | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place** | **Done.** Logic in `src/review/` (§5.2, 20 tests), HTTP surface in `supabase/functions/sync/` (routing + auth complete, `PostgresStore` not yet — needs a live project), UI in `web/` (verified end-to-end with Playwright against a local demo server). Not deployed. |
+| **2** | Reviewer: due queue, four buttons, suspend/delete, **edit-in-place**, decks, interval previews | **Done.** Logic in `src/review/` (§5.2, 42 tests), HTTP surface in `supabase/functions/sync/` (routing + auth complete, `PostgresStore` not yet — needs a live project), UI in `web/` redesigned to match real AnkiDroid's night theme (verified end-to-end with Playwright against a local demo server). Not deployed. |
 | 3 | Offline: service worker, IndexedDB, queued reviews | Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Now there is somewhere for the data to land. |
 | 5 | Scanner: camera, canvas resize, `/scan` edge function | Deletes the export/import tax (§1.2). |

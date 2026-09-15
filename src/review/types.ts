@@ -33,7 +33,18 @@ export interface CardStateRow {
 
 /** One row of `notes`. Only the fields the reviewer actually displays or edits —
  * `ankiGuid`/`source`/`createdAt` are migration/provenance concerns the review UI
- * has no reason to touch. */
+ * has no reason to touch.
+ *
+ * `deck` was added after the fact, not in the original design doc sketch: the
+ * schema had no deck concept at all until a real look at AnkiDroid's own deck list
+ * (Ukrainian / English / Grammar / Spelling / Pronunciation) made clear that
+ * "browse by deck" is core to how this is actually used, not a detail. It's a
+ * free-text label, not a foreign key to a decks table — Anki itself treats a deck
+ * as just a path string on a card, and nothing here needs more than that yet.
+ * Only decks whose notes share the Capybara vocabulary schema (lemma/gloss/…) are
+ * reviewable by this app today; Spelling and Pronunciation are different note
+ * shapes entirely (§7.5 finding 5) and aren't representable here regardless of
+ * this field. */
 export interface NoteRow {
   id: string;
   lemma: string;
@@ -44,6 +55,7 @@ export interface NoteRow {
   example: string | null;
   exampleTranslation: string | null;
   audioUrl: string | null;
+  deck: string;
 }
 
 /** What the due-queue selector needs to know about one note — a projection of
@@ -53,6 +65,15 @@ export interface DueCandidate {
   due: Date | null;
   state: 0 | 1 | 2 | 3 | null;
   suspended: boolean;
+}
+
+/** Per-deck due counts for the deck-list screen — the same three-bucket
+ * categorization `selectDueQueue` uses (learning/relearning, review, new),
+ * summarized as counts instead of an ordered id list. */
+export interface QueueSummary {
+  learningCount: number;
+  reviewCount: number;
+  newCount: number;
 }
 
 /** How many of each kind this user has already reviewed today — the daily-limit
