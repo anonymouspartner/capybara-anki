@@ -15,11 +15,30 @@
  * fields a given action actually determines, never wipes the rest.
  */
 
-/** One row of `card_state`. FSRS fields are null for a note with no `card_state`
- * row at all (never reviewed, never suspended) — callers should treat "no row" and
- * "a row with every FSRS field null" the same way; both mean "new." */
+/** D17: a `Capybara+` note's real second Anki card, scheduled entirely
+ * independently of its recall card (confirmed against a real export — separate
+ * `cards` rows, separate revlog history). Every note that isn't `Capybara+` only
+ * ever has a `'recall'` row; `'spelling'` only exists for notes with
+ * `NoteRow.hasSpelling`. */
+export type CardKind = "recall" | "spelling";
+
+/** D18: what kind of thing a note is, for the reviewer UI's sake — not a
+ * different table, since a real export's `Capybara Pronunciation (shadowing)`
+ * note type's fields map directly onto the existing vocabulary columns
+ * (`TargetText`→`lemma`, `ReferenceAudio`→`audioUrl`, `Translation`→
+ * `lemmaTranslation`, `Hint`→`gloss`). `'vocab'` is the default and everything
+ * built before D18 implicitly assumed it. */
+export type NoteKind = "vocab" | "pronunciation";
+
+/** One row of `card_state`, now identified by `(noteId, cardKind)` rather than
+ * `noteId` alone (D17) — a `Capybara+` note has two independent rows, everything
+ * else has exactly one, always `cardKind: 'recall'`. FSRS fields are null for a
+ * card with no `card_state` row at all (never reviewed, never suspended) —
+ * callers should treat "no row" and "a row with every FSRS field null" the same
+ * way; both mean "new." */
 export interface CardStateRow {
   noteId: string;
+  cardKind: CardKind;
   due: Date | null;
   stability: number | null;
   difficulty: number | null;
@@ -41,10 +60,17 @@ export interface CardStateRow {
  * "browse by deck" is core to how this is actually used, not a detail. It's a
  * free-text label, not a foreign key to a decks table — Anki itself treats a deck
  * as just a path string on a card, and nothing here needs more than that yet.
- * Only decks whose notes share the Capybara vocabulary schema (lemma/gloss/…) are
- * reviewable by this app today; Spelling and Pronunciation are different note
- * shapes entirely (§7.5 finding 5) and aren't representable here regardless of
- * this field. */
+ * `Capybara::Grammar` needed nothing beyond this: confirmed against a real export
+ * (D17/§11 item 4) to be plain vocabulary notes, just filed under a different deck.
+ *
+ * `kind` (D18) and `hasSpelling` (D17) are the two things a real export's richer
+ * deck list turned out to need: `kind: 'pronunciation'` reuses these same columns
+ * for a `Capybara Pronunciation (shadowing)` note (see `NoteKind`'s docstring for
+ * the field mapping) rather than adding a parallel table, and `hasSpelling` marks
+ * which vocabulary notes are real `Capybara+` notes that also produce a `Spelling`
+ * card (`CardKind`). Both default to the every-other-note case (`'vocab'`, `false`)
+ * so every note created before D17/D18 existed needs no backfill to keep meaning
+ * the same thing. */
 export interface NoteRow {
   id: string;
   lemma: string;
@@ -56,6 +82,8 @@ export interface NoteRow {
   exampleTranslation: string | null;
   audioUrl: string | null;
   deck: string;
+  kind: NoteKind;
+  hasSpelling: boolean;
 }
 
 /** A note not yet in `notes` — what `/scan` (step 5, docs/DESIGN.md §4.1) inserts
@@ -73,16 +101,28 @@ export interface NewNote {
   exampleTranslation: string | null;
   audioUrl: string | null;
   deck: string;
+  kind: NoteKind;
+  hasSpelling: boolean;
   source: "scan" | "bot" | "anki-import";
 }
 
-/** What the due-queue selector needs to know about one note — a projection of
+/** What the due-queue selector needs to know about one *card* (D17: a note with
+ * `hasSpelling` contributes two of these, one per `CardKind`) — a projection of
  * `NoteRow` + `CardStateRow`, not a new source of truth. */
 export interface DueCandidate {
   noteId: string;
+  cardKind: CardKind;
   due: Date | null;
   state: 0 | 1 | 2 | 3 | null;
   suspended: boolean;
+}
+
+/** Identifies one due card — `dueQueue.ts`'s output unit. Just `noteId` stopped
+ * being unique the moment D17 gave a `Capybara+` note two independently-due cards;
+ * `noteId` alone was `selectDueQueue`'s return type before that. */
+export interface DueItem {
+  noteId: string;
+  cardKind: CardKind;
 }
 
 /** Per-deck due counts for the deck-list screen — the same three-bucket
@@ -131,6 +171,8 @@ export interface ReviewInput {
    * idempotent no-op rather than a duplicate. */
   reviewId: string;
   noteId: string;
+  /** Which of the note's (one or two, D17) cards this answers. */
+  cardKind: CardKind;
   userId: string;
   rating: 1 | 2 | 3 | 4;
   reviewedAt: Date;
@@ -140,6 +182,7 @@ export interface ReviewInput {
 export interface ReviewRow {
   id: string;
   noteId: string;
+  cardKind: CardKind;
   userId: string;
   rating: 1 | 2 | 3 | 4;
   reviewedAt: Date;

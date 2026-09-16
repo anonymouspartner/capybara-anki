@@ -61,7 +61,7 @@ Inherited from `capybara-bot`, and they apply here too:
 | 4 · Real migration | blocked on a live Supabase project (Claude never deploys/touches Supabase without an explicit, in-the-moment request) |
 | 5 · Scanner (camera, canvas resize, `/scan`) | **done** — see [`src/scan/`](src/scan/), [`supabase/functions/scan/`](supabase/functions/scan/), [`web/scan.html`](web/scan.html) |
 | 6 · Stats | **done** — see [`src/review/stats.ts`](src/review/stats.ts) and [`web/stats.html`](web/stats.html) |
-| 6 · Pronunciation | blocked on open design questions (docs/DESIGN.md §11, items 4-5) — needs a real look at the actual Pronunciation/Grammar/Spelling deck contents |
+| 6 · Pronunciation, Grammar, Spelling | **done** — see [`src/pronunciation/`](src/pronunciation/), [`supabase/functions/pronounce/`](supabase/functions/pronounce/); `migration/`'s Python CLI doesn't implement either yet (docs/DESIGN.md §8, a known gap) |
 
 See §9 of the design doc for why the migration spike comes first.
 
@@ -219,9 +219,46 @@ the deck list's session footer. Verified with Playwright against the demo server
 seeded with six backdated synthetic reviews so the chart/streak/success-rate show
 real shapes rather than an all-zero screen on first load.
 
-**Pronunciation** (the other half of step 6) is genuinely blocked, not started:
-docs/DESIGN.md §11 open questions 4 and 5 — whether the real `Pronunciation` deck
-shares this app's vocabulary schema, and whether `Grammar`/`Spelling`/`Capybara+`'s
-second card template are in scope — need a real look at the actual deck contents
-to answer, the same way §7.5's five migration findings all came from reading the
-real export rather than guessing.
+## Pronunciation, Grammar, and Spelling
+
+The other half of step 6. docs/DESIGN.md §11's open questions 4 and 5 got resolved
+against a second real export (2026-09-16, structural fields/counts only): `Grammar`
+turned out to need nothing (plain vocabulary notes in a different deck), but
+`Pronunciation` genuinely doesn't share the vocabulary schema — corrected, not
+confirmed — and `Spelling` is a `Capybara+` note's real second, independently-
+scheduled Anki card.
+
+**Grammar (D17/§11 item 4):** nothing to build — `Capybara::Grammar` uses the
+plain `Capybara` note type, so it already works via `deck`.
+
+**Spelling (D17):** `card_state`/`reviews` gained a `card_kind` dimension
+(`'recall' | 'spelling'`, default `'recall'`) — a `Capybara+`-equivalent note
+(`NoteRow.hasSpelling`) surfaces two independently-scheduled due items instead of
+being folded into one. Every function that touches `card_state` (`dueQueue.ts`,
+`mutations.ts`, `handlers.ts`, `store.ts`) now threads it through explicitly.
+
+**Pronunciation (D18):** `src/pronunciation/score.ts` computes D14's three buckets
+(right/close/wrong, never a percentage) as normalized Levenshtein distance between
+a Whisper transcript and the note's target text, mapped to an FSRS rating
+(right→Good, close→Hard, wrong→Again — never Easy, which this method can't earn).
+`src/pronunciation/transcribe.ts` calls OpenAI Whisper the same way
+`capybara-bot`'s own voice-message handling already does. `supabase/functions/
+pronounce/` scores an attempt and returns the rating; the client takes it to the
+exact same `POST /sync/review` every other card uses, so one path ever mutates
+`card_state`. `web/app.js` gives a pronunciation note a record-and-score screen
+(mic button, `MediaRecorder`, a bucket/transcript result, Continue) instead of
+reveal-and-rate. 18 tests across both modules.
+
+Verified with Playwright: the Spelling badge appears on a `hasSpelling` note's
+second due item; Chromium's fake media device
+(`--use-fake-device-for-media-stream`/`--use-fake-ui-for-media-stream`) drives a
+full record → score → continue → next-card cycle against the demo server (whose
+`/pronounce/score` calls the real `scoreAttempt()` fed a canned transcript, never
+a real Whisper call).
+
+**Known gap: `migration/` (the Python CLI) does not yet implement D17 or D18.**
+It would currently mis-migrate a real `Capybara+` note (merging its Spelling
+card's reviews into the recall card's `card_state` — see docs/DESIGN.md §7.5
+finding 5) and skip every Pronunciation note outright. Flagged, not silently
+missed — needs `cards.ord` added to `extract.get_cards` and the same
+verify-against-the-real-export treatment §7.5's other findings got.

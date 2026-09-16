@@ -120,6 +120,57 @@
   #edit-errors { color: var(--btn-again); font-size: 13px; }
 
   #empty, #error { text-align: center; padding: 60px 16px; color: var(--fg-muted); }
+
+  /* Pronunciation (D18) — record-and-score instead of reveal-and-rate. */
+  #pronunciation-control { margin: 24px 0; }
+  .mic-btn {
+    width: 84px;
+    height: 84px;
+    border-radius: 50%;
+    border: none;
+    font-size: 32px;
+    cursor: pointer;
+    background: var(--btn-good);
+    color: var(--btn-fg);
+  }
+  .mic-btn.recording { background: var(--btn-again); }
+  #pronunciation-status { color: var(--fg-muted); font-size: 13px; margin-top: 8px; }
+  #pronunciation-result {
+    margin: 16px 0;
+    padding: 14px;
+    border-radius: 8px;
+    background: var(--bg-toolbar);
+  }
+  .bucket-label { font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
+  #pronunciation-result.bucket-right .bucket-label { color: var(--stat-review); }
+  #pronunciation-result.bucket-close .bucket-label { color: var(--btn-hard-fg); }
+  #pronunciation-result.bucket-wrong .bucket-label { color: var(--btn-again); }
+  #pronunciation-result .transcript { margin-top: 6px; font-style: italic; color: var(--fg-muted); }
+  #pronunciation-error { color: var(--btn-again); font-size: 13px; margin-top: 8px; }
+  #continue-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    background: var(--btn-reveal);
+    color: var(--btn-fg);
+    font-size: 15px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .card-kind-badge {
+    /* #card is a flex column with default align-items: stretch — without
+       align-self here this stretches to the card's full width instead of
+       sizing to its own text (caught by a Playwright screenshot showing a
+       full-width pill instead of a small badge). */
+    align-self: center;
+    font-size: 11px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-bottom: 8px;
+  }
 </style>
 </head>
 <body>

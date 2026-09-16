@@ -34,10 +34,14 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  // Never intercept API calls — /scan (the Claude call, step 5) needs network as
-  // much as /sync does, and a cache-first match against a POST it never cached
-  // would only paper over that rather than fail honestly.
-  if (url.pathname.startsWith("/sync") || url.pathname.startsWith("/scan")) return;
+  // Never intercept API calls — /scan (the Claude call) and /pronounce (the
+  // Whisper call, D18) need network as much as /sync does, and a cache-first
+  // match against a POST it never cached would only paper over that rather than
+  // fail honestly.
+  if (
+    url.pathname.startsWith("/sync") || url.pathname.startsWith("/scan") ||
+    url.pathname.startsWith("/pronounce")
+  ) return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached ?? fetch(event.request)),

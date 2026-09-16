@@ -16,7 +16,7 @@
 
 import { applyReview } from "../fsrs/replay.ts";
 import type { FsrsCardState, FsrsSchedulerParams } from "../fsrs/types.ts";
-import type { CardStateRow, NoteRow, ReviewInput, ReviewRow } from "./types.ts";
+import type { CardKind, CardStateRow, NoteRow, ReviewInput, ReviewRow } from "./types.ts";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -50,15 +50,20 @@ function daysBetween(a: Date, b: Date): number {
 }
 
 /** Merges a partial change into whatever `card_state` currently is (or nothing, for
- * a genuinely new note), touching only the fields present in `patch`. This is the
- * one place that has to know a missing row and an all-null row mean the same thing. */
+ * a genuinely new card), touching only the fields present in `patch`. This is the
+ * one place that has to know a missing row and an all-null row mean the same thing.
+ * `cardKind` (D17) is part of the row's identity, not a patchable field — a review
+ * or suspend action always knows up front which of a note's (one or two) cards
+ * it's touching. */
 export function mergeCardState(
   current: CardStateRow | null,
   noteId: string,
-  patch: Partial<Omit<CardStateRow, "noteId">>,
+  cardKind: CardKind,
+  patch: Partial<Omit<CardStateRow, "noteId" | "cardKind">>,
 ): CardStateRow {
   const base: CardStateRow = current ?? {
     noteId,
+    cardKind,
     due: null,
     stability: null,
     difficulty: null,
@@ -99,6 +104,7 @@ export function buildReviewMutation(
   const reviewRow: ReviewRow = {
     id: input.reviewId,
     noteId: input.noteId,
+    cardKind: input.cardKind,
     userId: input.userId,
     rating: input.rating,
     reviewedAt: input.reviewedAt,
@@ -106,7 +112,7 @@ export function buildReviewMutation(
     scheduledDays,
   };
 
-  const cardStateRow = mergeCardState(current, input.noteId, {
+  const cardStateRow = mergeCardState(current, input.noteId, input.cardKind, {
     due: nextFsrsState.due,
     stability: nextFsrsState.stability,
     difficulty: nextFsrsState.difficulty,
@@ -126,9 +132,10 @@ export function buildReviewMutation(
 export function buildSuspendMutation(
   current: CardStateRow | null,
   noteId: string,
+  cardKind: CardKind,
   suspended: boolean,
 ): CardStateRow {
-  return mergeCardState(current, noteId, { suspended });
+  return mergeCardState(current, noteId, cardKind, { suspended });
 }
 
 export interface NoteEditResult {

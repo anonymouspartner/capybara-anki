@@ -14,7 +14,7 @@ import {
   validateNoteEdit,
 } from "./mutations.ts";
 import { computeStats, type StatsResult } from "./stats.ts";
-import type { NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
+import type { CardKind, DueItem, NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
 import type { Store } from "./store.ts";
 
@@ -26,16 +26,16 @@ function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
   };
 }
 
-/** GET the due queue: note ids only, in review order, optionally scoped to one
- * deck. The caller fetches each note's fields separately (or the HTTP layer
- * batches it) — this function's job stops at "what order," matching dueQueue.ts's
- * own scope. */
+/** GET the due queue: `(noteId, cardKind)` pairs only, in review order,
+ * optionally scoped to one deck. The caller fetches each card's content
+ * separately (or the HTTP layer batches it) — this function's job stops at "what
+ * order," matching dueQueue.ts's own scope. */
 export async function getDueQueue(
   store: Store,
   userId: string,
   now: Date,
   deck?: string,
-): Promise<string[]> {
+): Promise<DueItem[]> {
   const [candidates, config, counts] = await Promise.all([
     store.getDueCandidates(userId, deck),
     store.getSchedulerConfig(userId),
@@ -74,6 +74,10 @@ export async function getDeckSummaries(store: Store, userId: string, now: Date):
 }
 
 export interface DueCard extends NoteRow {
+  /** Which of this note's (one or two, D17) cards this is — part of the UI's
+   * identity for the item, since `note.id` alone no longer uniquely picks one out
+   * of the due queue once a `Capybara+` note's spelling card can appear too. */
+  cardKind: CardKind;
   preview: IntervalPreview;
 }
 
@@ -88,16 +92,19 @@ export async function getDueQueueWithPreviews(
   now: Date,
   deck?: string,
 ): Promise<DueCard[]> {
-  const [ids, config] = await Promise.all([
+  const [items, config] = await Promise.all([
     getDueQueue(store, userId, now, deck),
     store.getSchedulerConfig(userId),
   ]);
   const params = toFsrsParams(config);
 
-  const cards = await Promise.all(ids.map(async (id) => {
-    const [note, cardState] = await Promise.all([store.getNote(id), store.getCardState(id)]);
+  const cards = await Promise.all(items.map(async (item) => {
+    const [note, cardState] = await Promise.all([
+      store.getNote(item.noteId),
+      store.getCardState(item.noteId, item.cardKind),
+    ]);
     if (!note) return null;
-    return { ...note, preview: previewIntervals(cardState, now, params) };
+    return { ...note, cardKind: item.cardKind, preview: previewIntervals(cardState, now, params) };
   }));
   return cards.filter((c): c is DueCard => c !== null);
 }
@@ -133,7 +140,7 @@ export class NotFoundError extends Error {}
  * so a retry is harmless either way. */
 export async function submitReview(store: Store, input: ReviewInput): Promise<void> {
   const [current, config] = await Promise.all([
-    store.getCardState(input.noteId),
+    store.getCardState(input.noteId, input.cardKind),
     store.getSchedulerConfig(input.userId),
   ]);
   const { reviewRow, cardStateRow } = buildReviewMutation(current, input, toFsrsParams(config));
@@ -141,10 +148,15 @@ export async function submitReview(store: Store, input: ReviewInput): Promise<vo
   await store.upsertCardState(cardStateRow);
 }
 
-/** POST suspend or unsuspend. */
-export async function setSuspended(store: Store, noteId: string, suspended: boolean): Promise<void> {
-  const current = await store.getCardState(noteId);
-  await store.upsertCardState(buildSuspendMutation(current, noteId, suspended));
+/** POST suspend or unsuspend one of a note's (one or two, D17) cards. */
+export async function setSuspended(
+  store: Store,
+  noteId: string,
+  cardKind: CardKind,
+  suspended: boolean,
+): Promise<void> {
+  const current = await store.getCardState(noteId, cardKind);
+  await store.upsertCardState(buildSuspendMutation(current, noteId, cardKind, suspended));
 }
 
 export interface EditNoteResult {

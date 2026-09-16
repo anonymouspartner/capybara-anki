@@ -9,7 +9,13 @@ const NO_LIMITS_TAKEN = { newTakenToday: 0, reviewTakenToday: 0 };
 const GENEROUS_LIMITS = { dailyNewLimit: 100, dailyReviewLimit: 100 };
 
 function candidate(overrides: Partial<DueCandidate>): DueCandidate {
-  return { noteId: "n1", due: null, state: null, suspended: false, ...overrides };
+  return { noteId: "n1", cardKind: "recall", due: null, state: null, suspended: false, ...overrides };
+}
+
+/** Most tests here only care about which notes came back and in what order —
+ * `cardKind` gets its own dedicated test below (D17). */
+function noteIds(result: { noteId: string }[]): string[] {
+  return result.map((r) => r.noteId);
 }
 
 Deno.test("a suspended card never appears, however overdue", () => {
@@ -43,7 +49,7 @@ Deno.test("learning cards come before review cards, both before new", () => {
     NO_LIMITS_TAKEN,
     NOW,
   );
-  assertEquals(result, ["learning-1", "review-1", "new-1"]);
+  assertEquals(noteIds(result), ["learning-1", "review-1", "new-1"]);
 });
 
 Deno.test("relearning cards (state 3) are treated the same as learning (state 1)", () => {
@@ -56,7 +62,7 @@ Deno.test("relearning cards (state 3) are treated the same as learning (state 1)
     NO_LIMITS_TAKEN,
     NOW,
   );
-  assertEquals(result, ["relearning-1", "review-1"]);
+  assertEquals(noteIds(result), ["relearning-1", "review-1"]);
 });
 
 Deno.test("review cards come back oldest-due-first", () => {
@@ -70,7 +76,7 @@ Deno.test("review cards come back oldest-due-first", () => {
     NO_LIMITS_TAKEN,
     NOW,
   );
-  assertEquals(result, ["more-overdue", "less-overdue"]);
+  assertEquals(noteIds(result), ["more-overdue", "less-overdue"]);
 });
 
 Deno.test("a card with no card_state row at all (state null) counts as new", () => {
@@ -80,7 +86,7 @@ Deno.test("a card with no card_state row at all (state null) counts as new", () 
     NO_LIMITS_TAKEN,
     NOW,
   );
-  assertEquals(result, ["n1"]);
+  assertEquals(noteIds(result), ["n1"]);
 });
 
 Deno.test("daily new limit caps how many new cards appear, once today's count is included", () => {
@@ -121,7 +127,22 @@ Deno.test("daily review limit caps overdue review cards but never touches learni
   // Learning is never rate-limited (see dueQueue.ts's module docstring); only one
   // of the two review-state cards fits inside dailyReviewLimit: 1.
   assertEquals(result.length, 2);
-  assertEquals(result[0], "learning-1");
+  assertEquals(result[0].noteId, "learning-1");
+});
+
+Deno.test("D17: a note with a recall and a spelling candidate can appear twice, once per cardKind", () => {
+  const result = selectDueQueue(
+    [
+      candidate({ noteId: "n1", cardKind: "recall", state: null }),
+      candidate({ noteId: "n1", cardKind: "spelling", state: null }),
+    ],
+    GENEROUS_LIMITS,
+    NO_LIMITS_TAKEN,
+    NOW,
+  );
+  assertEquals(result.length, 2);
+  assertEquals(new Set(result.map((r) => r.cardKind)), new Set(["recall", "spelling"]));
+  assertEquals(result.every((r) => r.noteId === "n1"), true);
 });
 
 Deno.test("summarizeDueQueue: counts match what selectDueQueue would actually offer", () => {

@@ -144,6 +144,8 @@ Locked unless revisited deliberately.
 | D14 | Whisper scoring: right / close / wrong | Three buckets, honestly reflecting the precision the method has. |
 | D15 | Parallel-run with AnkiDroid | Migration therefore must be **idempotent and re-runnable**, which constrains the schema. |
 | D16 | Streamlit scanner stays alive until replaced | No capability gap during the build. |
+| D17 | `card_state`/`reviews` key on `(note_id, card_kind)`, not `note_id` alone | Consequence of §11 item 5, resolved against a real export: `Capybara+`'s 244 notes really do produce two independently-scheduled Anki cards (recall + spelling), each with its own memory state. `card_kind` defaults to `'recall'` — every non-`Capybara+` note only ever has one row, so this is additive, not a rewrite. Resolved 2026-09-16. |
+| D18 | Pronunciation notes are `notes` rows with `kind = 'pronunciation'`, reusing existing columns | §11 item 4, resolved against the same export: the real note type's fields (`TargetText`/`ReferenceAudio`/`Translation`/`Hint`) map directly onto `lemma`/`audio_url`/`lemma_translation`/`gloss` — no new note columns needed. `kind` (default `'vocab'`) is the one addition, and it's what the reviewer UI switches on to render a record-and-score screen instead of reveal-and-rate. Scoring (D14's three buckets) maps to an FSRS rating and goes through the exact same `reviews`/`card_state` machinery as any other card — pronunciation needed a different *input method*, not a different *scheduler*. Resolved 2026-09-16. |
 
 ### 3.1 Rules inherited from `capybara-bot`
 
@@ -355,14 +357,28 @@ notes (
   -- that. Added after the fact (§5.2), once real AnkiDroid screenshots made
   -- "browse by deck" look core to how this is actually used, not a detail.
   deck          text default 'Ukrainian',
+  -- D18, resolved against a real export: a Pronunciation note is a `notes` row
+  -- too (`kind = 'pronunciation'`), reusing lemma/audio_url/lemma_translation/
+  -- gloss for TargetText/ReferenceAudio/Translation/Hint rather than a parallel
+  -- table. D17: has_spelling marks a real `Capybara+` note, which produces a
+  -- second, independently-scheduled Spelling card (card_state.card_kind below).
+  kind          text default 'vocab' check (kind in ('vocab', 'pronunciation')),
+  has_spelling  boolean default false,
   created_at    timestamptz
 );
 
--- One row per note. A cache over `reviews` (§4.3), folded without regard to
--- who reviewed — see D2. Correct as long as a note is only ever reviewed by
--- one person, which decks being disjoint by language makes true today.
+-- One row per CARD, not per note — D17, resolved against a real export: a
+-- Capybara+ note's real Anki data confirmed two independently-scheduled cards
+-- (separate cards rows, separate revlog history), so folding them into one row
+-- per note would silently merge two different memory states. card_kind defaults
+-- to 'recall'; 'spelling' only exists for a note with has_spelling. A cache over
+-- `reviews` (§4.3), folded without regard to who reviewed — see D2. Correct as
+-- long as a note is only ever reviewed by one person, which decks being disjoint
+-- by language makes true today.
 card_state (
-  note_id       uuid primary key references notes(id),
+  note_id       uuid references notes(id),
+  card_kind     text default 'recall' check (card_kind in ('recall', 'spelling')),
+  primary key (note_id, card_kind),
   due           timestamptz,      -- a real FSRS moment, not a day — see below
   stability     real,             -- FSRS memory state
   difficulty    real,             -- FSRS memory state
@@ -392,6 +408,7 @@ card_state (
 reviews (
   id            uuid primary key, -- client-generated → idempotent upsert
   note_id       uuid references notes(id),
+  card_kind     text default 'recall' check (card_kind in ('recall', 'spelling')),
   user_id       uuid references users(id),
   rating        smallint,         -- 1..4 — matches ts-fsrs's Rating enum exactly,
                                    -- which in turn matches Anki's own revlog.ease;
@@ -686,15 +703,23 @@ argument for building this step first, per §9.
 
 5. **"Capybara+" isn't a name variant — it has a second card template.** `Capybara`
    has one template (`Card 1`); `Capybara+` has two (`Card 1` and `Spelling`), which
-   is presumably what feeds the separate `CapybaraSpelling` deck. §1.3's "one card
+   is presumably what feeds the separate `Capybara::Spelling` deck. §1.3's "one card
    template, one direction" description is true of the *original* note type and no
-   longer true of the collection as a whole — 244 notes produce two cards apiece.
-   The migration CLI already handles multi-card notes correctly (uses the lower-id
-   card for `card_state`, keeps review history from every card, warns once per
-   note) — this is not a migration bug. It **is** an open product question for the
-   reviewer: does a spelling card belong in the same due queue as a recall card, as
-   its own queue, or does this become one of the "not carried forward" list for a
-   v1 cutover? Not decided; added to §11.
+   longer true of the collection as a whole — 244 notes produce two cards apiece,
+   each independently scheduled (confirmed for real against a second export,
+   2026-09-16: 178+66=244 recall cards split across `Capybara::Ukrainian`/`English`,
+   and all 244 spelling cards in `Capybara::Spelling`). **Resolved as D17**: the
+   reviewer surfaces both as separate due items via a `card_kind` dimension on
+   `card_state`/`reviews`, not folded into one row.
+   **The migration CLI does not implement this yet — a real, currently-live bug,
+   not just an unresolved question anymore.** What's described in the paragraph
+   this replaced (pick the lower-id card for `card_state`, attach every card's
+   review history to that one row) actively corrupts a `Capybara+` note's data:
+   the Spelling card's reviews get recorded against the recall card's `card_state`,
+   so an FSRS replay of that merged log won't match either card's real memory
+   state. Needs `cards.ord` (not currently selected by `extract.get_cards`) to
+   assign `card_kind` correctly before this collection can be migrated for real —
+   see §8's "known gap" note.
 
 None of the five needed a redesign. All five were fixed in the code they touched,
 with a comment or a test (often both) explaining what broke and why, so nobody
@@ -725,15 +750,63 @@ precision transcription-versus-target does not have.
 The existing `scripts/anki_pronunciation/` in the bot repo already generates reference
 audio via ElevenLabs. That stays as-is; only the scoring side is new.
 
-**Status: not started, and genuinely blocked** — not on infrastructure like step 4,
-but on open questions §11 already lists and never resolved: whether the real
-`Capybara::Pronunciation(::Ukrainian)` deck's notes share the vocabulary schema this
-reviewer knows how to render at all (open question 4), and, separately, whether
-`Capybara::Grammar`/`Capybara::Spelling` — including the `Capybara+` note type's
-second card (open question 5) — are in scope for a v1 cutover. Both need a real look
-at the actual deck contents to answer, the same way §7.5's five findings all came
-from reading the real export rather than assuming. Guessing the note shape and
-building against it would repeat exactly the mistake step 0 existed to avoid.
+**Status: done**, once open questions 4 and 5 (§11) were resolved against a second
+real export (2026-09-16, structural fields/counts only — no corpus content read or
+retained) — see D17 and D18. The real findings corrected one assumption rather than
+confirming it: `Capybara::Grammar` turned out to be plain vocabulary notes (nothing
+to build), but `Capybara::Pronunciation::Ukrainian` genuinely does **not** share the
+vocabulary schema — its note type (`Capybara Pronunciation (shadowing)`, fields
+`TargetText`/`ReferenceAudio`/`Translation`/`Language`/`Hint`/`SourceId`) is
+different, just close enough to reuse `notes`' existing columns (D18) rather than
+needing a parallel table.
+
+**`src/pronunciation/score.ts`** — D14's three buckets, computed as normalized
+Levenshtein distance between a Whisper transcript and the note's target text
+(`lemma`), lowercased and punctuation-stripped first. Deliberately crude, per D14's
+own rationale: a real phoneme assessment would score pronunciation; this only
+confirms Whisper heard roughly the right words. Maps to an FSRS rating — `right`→3
+(Good), `close`→2 (Hard), `wrong`→1 (Again) — **never 4 (Easy)**, since a string-
+similarity check can't earn that confidence. 7 tests.
+
+**`src/pronunciation/transcribe.ts`** — calls OpenAI Whisper (`whisper-1`,
+`audio/transcriptions`, `FormData` with `file`/`model`/`response_format:
+"verbose_json"`/an optional `language` hint) — the exact same call
+`capybara-bot`'s own voice-message handling already makes, reused rather than
+reinvented. 4 tests against a fake `TranscribeClient`, never a real network call.
+
+**`supabase/functions/pronounce/`** — `POST /pronounce/score` transcribes and
+scores an attempt, returning `{ transcript, similarity, bucket, rating }`, and
+writes nothing itself: the client takes that `rating` to the exact same
+`POST /sync/review` every other card uses (`cardKind: 'recall'` — a pronunciation
+note never has a spelling card), so there's one path that ever mutates
+`card_state`, not two. Same honest `PostgresStore`-not-implemented gap as `/sync`
+and `/scan`.
+
+**`web/app.js`** — a pronunciation note (`note.kind === 'pronunciation'`) gets a
+record-and-score screen instead of reveal-and-rate: a mic button using
+`MediaRecorder`, a scoring spinner, then the bucket/transcript with a Continue
+button that calls the normal rating-submission path. Verified with Playwright
+using Chromium's fake media device (`--use-fake-device-for-media-stream`/
+`--use-fake-ui-for-media-stream`) against the demo server, whose `/pronounce/score`
+returns a real `scoreAttempt()` call fed a canned "perfect" transcript rather than
+a real Whisper call — full record → score → continue → next-card cycle confirmed
+working, not just the individual pieces.
+
+**Known gap, not silently missed: `migration/` (the Python CLI) does not yet
+implement D17/D18.** `transform_note` still recognizes only the plain vocabulary
+field signature and would skip every Pronunciation note and mis-key every
+`Capybara+` note's second card. Fixing it means: recognizing the Pronunciation
+field signature and mapping it onto `notes`' columns (with `Language`'s value —
+a BCP-47 tag like `uk-UA` per `scripts/anki_pronunciation/deck.py` in the bot
+repo — normalized to `uk`/`en`, preferably corroborated against the deck path
+rather than trusted blindly); reading `cards.ord` (not currently even selected by
+`extract.get_cards`) to know which of a `Capybara+` note's two real cards is
+`recall` and which is `spelling`; and setting `notes.deck` from the *recall*
+card's deck specifically, since the spelling card's own real Anki deck
+(`Capybara::Spelling`) is deliberately not modeled as a separate deck here (D17 —
+spelling surfaces as a second due item in the note's own deck, not a new one).
+This needs the same "verify against the real export, add a regression test" pass
+§7.5 gave the original five findings before it's built, not a guess.
 
 ### 8.1 Stats — the other half of step 6, and separable from pronunciation
 
@@ -780,7 +853,7 @@ the risk survivable.
 | **3** | Offline: service worker, IndexedDB, queued reviews | **Done.** `web/sw.js` + `web/offline.js` (§6.2), verified with Playwright: an offline answer queues and shows a pending count, a reconnect flushes it, and a full page reload while offline still renders the cached deck list. Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Blocked on a live Supabase project with this schema applied — Claude never deploys or touches Supabase without an explicit, in-the-moment request (capybara-bot's CLAUDE.md, this repo's own ground rules), so this waits for the maintainer. |
 | **5** | Scanner: camera, canvas resize, `/scan` edge function | **Done.** `src/scan/` (extract + import, §4.1, 13 tests), `supabase/functions/scan/`, `web/scan.html`/`scan.js`, verified end-to-end with Playwright against the demo server. Deletes the export/import tax (§1.2). |
-| 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. **Stats done** (§8.1, 12 tests). **Pronunciation blocked** on open questions 4/5 (§11) — needs a real look at the actual `Pronunciation`/`Grammar`/`Spelling` deck contents, not a guess. |
+| **6** | Pronunciation, stats | **Done, both halves.** Stats (§8.1, 12 tests). Pronunciation (§8, `src/pronunciation/`, `supabase/functions/pronounce/`, 11 tests) once open questions 4/5 (§11) were resolved against a real export — Grammar needed nothing, Pronunciation got D18's field-reuse mapping, Spelling got D17's `card_kind`. `migration/`'s Python CLI does not yet implement either — a known, flagged gap (§8), not silently missed. |
 
 Step 0 was the whole point of doing this first: a day of work that either de-risks the
 project or saves a month. It found five real gaps between plan and reality (§7.5) and
@@ -816,16 +889,25 @@ Not blocking the migration spike; blocking step 1.
 3. **Day boundaries.** Both users are in one timezone but review at very different
    hours. Anki uses a configurable "next day starts at" rollover. What is it set to
    today, and does the same value carry over?
-4. **What `language` means for queue filtering.** The decks are effectively disjoint by
-   language (§9.1 assumption), but that is an assumption, not a constraint — nothing
-   currently stops a note being relevant to both users. The real deck list (§7.5) is
-   also richer than "Ukrainian/English": `Capybara::Grammar`, `Capybara::Spelling`,
-   `Capybara::Pronunciation(::Ukrainian)` all exist too. Whatever "language" ends up
-   meaning for filtering has to account for decks that aren't about a language at all.
-5. **The `Capybara+` second card template.** 244 real notes produce two cards each —
-   a normal recall card and a `Spelling` card (§7.5, finding 5). Does the reviewer
-   surface both as separate due items, fold spelling into the same review, or is this
-   left out of a v1 cutover? Not decided.
+4. **What `language` means for queue filtering — resolved 2026-09-16, against a real
+   export.** Inspected the actual collection (`migration/`'s own tooling, structural
+   fields/counts only — no corpus content read or retained): `Capybara::Grammar`
+   (61 cards) uses the plain `Capybara` note type, same `lemma`/`gloss`/… fields as
+   every other vocabulary card — it's just a deck label, no schema question at all.
+   **`Capybara::Pronunciation::Ukrainian` (191 cards) does NOT share the vocabulary
+   schema** — this corrects an earlier assumption. Its note type,
+   `Capybara Pronunciation (shadowing)`, has entirely different fields
+   (`TargetText`, `ReferenceAudio`, `Translation`, `Language`, `Hint`, `SourceId`)
+   and a single `Listen and Speak` template. See D18.
+5. **The `Capybara+` second card template — resolved 2026-09-16, against the same
+   export.** Confirmed: 244 `Capybara+` notes each produce two independently
+   scheduled Anki cards — a normal recall card (178 in `Capybara::Ukrainian`, 66 in
+   `Capybara::English` — same `Card 1` template as plain `Capybara` notes) and a
+   `Spelling` card (all 244, in the dedicated `Capybara::Spelling` deck). Real Anki
+   schedules these two cards independently (separate `cards` rows, separate revlog
+   history) — folding them into one `card_state` per note would silently merge two
+   different memory states into one. See D17: in scope for v1, via a new
+   `card_kind` dimension rather than a fold.
 
 Resolved since first draft: repo name is `capybara-anki` (created, not
 `capybara-cards` as originally proposed).
