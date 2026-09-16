@@ -111,8 +111,20 @@ Anki's template engine is almost entirely unused.
 ### 2.2 Explicitly not replaced
 
 **The Telegram bot pipeline does not change.** `/learn`, `/export`, `/pronounce`,
-`/recap` keep working exactly as they do now. The bot keeps writing `flashcards` rows;
-the new app simply also reads them. No change to `index.ts` is in scope.
+`/recap` keep working exactly as they do now. The bot keeps writing `vocabulary`/
+`flashcards` rows exactly as before — nothing existing is removed or altered.
+
+Revised 2026-09-16, against `anki_notes.source`'s own CHECK constraint (§5), which
+already listed `'bot'` as a first-class value alongside `'scan'`/`'anki-import'`
+by the time that table was designed — stronger, more specific evidence of intent
+than this section's original sentence ("no change to `index.ts` is in scope"),
+written before `anki_notes` existed as a concept. `annotateMessage` (capybara-bot's
+`telegram-bot/index.ts`) now dual-writes: the same vocabulary it already upserts
+into `vocabulary` also gets upserted into `anki_notes` with `source: 'bot'`, so it
+becomes a real, independently-scheduled reviewable card in this app — not a
+reconciliation job, not a second table capybara-anki reads, just one more `upsert`
+call next to the one already there. `vocabulary`/`flashcards` themselves are
+untouched by this — capybara-anki never reads them.
 
 ### 2.3 Kept forever
 
@@ -891,9 +903,15 @@ Not blocking the migration spike; blocking step 1.
 1. **Audio offline caching.** Reference recordings are the bulk of storage. Cache every
    card's audio, only due cards, or fetch on demand and accept silence offline? Needs a
    size estimate against the current collection before deciding.
-2. **Backfilling the bot's existing rows.** Do historical `flashcards` rows become
-   `notes`, or only new ones from the switch forward? Affects whether migration has two
-   sources to reconcile or one.
+2. **Backfilling the bot's existing rows — going-forward half resolved 2026-09-16,
+   backfill half still open.** New vocabulary the bot captures from here on writes
+   to `anki_notes` too (§2.2, `source: 'bot'`) — settled. What's still open: the
+   ~11,300 `vocabulary` rows and 776 `flashcards` rows that already existed before
+   this change. Turning those into `anki_notes` rows would mean deciding how to
+   seed their `card_state` (no FSRS history to replay — `flashcards` never
+   recorded any, per §1.2), and would instantly hand both users thousands of new
+   cards against a 40/day limit — months of backlog on day one. Left alone for now;
+   a real decision, not an oversight.
 3. **Day boundaries.** Both users are in one timezone but review at very different
    hours. Anki uses a configurable "next day starts at" rollover. What is it set to
    today, and does the same value carry over?

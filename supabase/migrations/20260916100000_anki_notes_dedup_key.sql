@@ -1,0 +1,22 @@
+-- Adds the dedup key `anki_notes` needs before the bot can safely dual-write into
+-- it. `vocabulary` (capybara-bot's own table) already has `UNIQUE (lemma,
+-- part_of_speech, language)` and upserts against it on every message
+-- (`annotateMessage`, `ignoreDuplicates: true`) — the same word recurs constantly
+-- across real conversation, so without an equivalent constraint here, wiring the
+-- bot to also write `anki_notes` would mint a brand new flashcard every single
+-- time a common word gets annotated again, not just the first time.
+--
+-- Applied 2026-09-16 on the same standing, explicit authorization as the original
+-- schema (docs/DESIGN.md §5's own migration file) — additive, reversible with a
+-- plain `DROP CONSTRAINT`. Verified before applying that `anki_notes` has 0 rows,
+-- so there is nothing an existing duplicate lemma/pos/language combination could
+-- conflict with.
+--
+-- Deliberately not scoped to `source = 'bot'`: a scanned note and a bot-seen note
+-- for the same word are still the same word — one flashcard per (lemma,
+-- part_of_speech, language) is the actual invariant wanted, regardless of which
+-- pipeline captured it first. `part_of_speech`/`language` being part of the key
+-- (not `lemma` alone) matches `vocabulary`'s own key exactly, so the two tables
+-- treat "the same word" as the same thing.
+ALTER TABLE "public"."anki_notes"
+    ADD CONSTRAINT "anki_notes_lemma_pos_language_key" UNIQUE ("lemma", "part_of_speech", "language");
