@@ -11,8 +11,9 @@
  * pronunciation notes never have a spelling card). One path ever mutates
  * `card_state`, not two.
  *
- * **Not deployed. Not deployable yet, on purpose — see PostgresStore below,
- * same honest gap as `../sync/index.ts`.**
+ * **Not deployed.** Same real `PostgresStore` as `../sync/index.ts` now
+ * (`../_shared/postgresStore.ts`, against the live `anki_*` tables) — deploying
+ * this function is still a separate, undone step, same reasoning as that file.
  *
  * Routes:
  *   POST /pronounce/score → { noteId, audioBase64, mediaType } →
@@ -26,22 +27,12 @@ import { scoreAttempt } from "../../../src/pronunciation/score.ts";
 import { TranscriptionError } from "../../../src/pronunciation/types.ts";
 import type { NoteRow } from "../../../src/review/types.ts";
 import { resolveUserId } from "../../../src/auth.ts";
+import { PostgresStore } from "../_shared/postgresStore.ts";
 
-// ---------------------------------------------------------------------------
-// Store — NOT YET IMPLEMENTED (see supabase/functions/sync/index.ts's own copy
-// of this note; the same real-project-first reasoning applies here unchanged)
-// ---------------------------------------------------------------------------
-
-/** Only what this function actually needs — reading one note's target text. */
+/** Only what this function actually needs — reading one note's target text.
+ * `PostgresStore` implements the full `Store`, a strict superset of this. */
 export interface NoteReader {
   getNote(noteId: string): Promise<NoteRow | null>;
-}
-
-class PostgresStore implements NoteReader {
-  constructor(_supabaseUrl: string, _serviceRoleKey: string) {}
-  getNote(_noteId: string): Promise<NoteRow | null> {
-    throw new Error("PostgresStore is not implemented yet — see supabase/functions/sync/index.ts");
-  }
 }
 
 function getStore(): NoteReader {
