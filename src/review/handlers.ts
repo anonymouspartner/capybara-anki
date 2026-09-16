@@ -104,7 +104,11 @@ export async function getDueQueueWithPreviews(
       store.getCardState(item.noteId, item.cardKind),
     ]);
     if (!note) return null;
-    return { ...note, cardKind: item.cardKind, preview: previewIntervals(cardState, now, params) };
+    return {
+      ...note,
+      cardKind: item.cardKind,
+      preview: previewIntervals(cardState, item.noteId, item.cardKind, now, params),
+    };
   }));
   return cards.filter((c): c is DueCard => c !== null);
 }

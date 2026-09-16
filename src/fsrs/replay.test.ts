@@ -89,10 +89,11 @@ Deno.test("input order doesn't matter — replay sorts by reviewedAt itself", ()
 });
 
 Deno.test("replay is deterministic — same log in, bit-identical state out, every time", () => {
-  // Guards enable_fuzz: false specifically. FSRS fuzz exists to spread real
-  // reviews across a study session; if it leaked into replay, two runs of the
-  // exact same history could disagree, which would quietly break every migration
-  // re-run (D15) and every "replay to recover" story in §4.3.
+  // If anything non-reproducible leaked into scheduling, two runs of the exact
+  // same history could disagree, which would quietly break every migration
+  // re-run (D15) and every "replay to recover" story in §4.3. Fuzz is the obvious
+  // candidate, so the seeded case below guards it specifically; this covers the
+  // unseeded path, where fuzz is off entirely.
   const reviews = [
     review("2026-01-01T00:00:00Z", 3),
     review("2026-01-05T00:00:00Z", 2),
@@ -108,4 +109,92 @@ Deno.test("different scheduler params produce different state — params are not
   const low = replayCardState(reviews, { ...REAL_PARAMS, desiredRetention: 0.7 });
   const high = replayCardState(reviews, { ...REAL_PARAMS, desiredRetention: 0.97 });
   assertNotEquals(low, high);
+});
+
+// ---------------------------------------------------------------------------
+// Interval fuzz (imported from Anki — see replay.ts's buildScheduler)
+// ---------------------------------------------------------------------------
+
+Deno.test("fuzz stays deterministic — a seeded replay is still bit-identical every run", () => {
+  // The whole reason fuzz can be enabled at all. Anki's fuzz is a seeded draw,
+  // not a random one, so it is a pure function of the card and its rep count —
+  // §4.3's "card_state is a fold over reviews" survives it. If this ever fails,
+  // fuzz has to go back off; a card_state that can't be rebuilt from its reviews
+  // is not a cache any more.
+  const reviews = [
+    review("2026-01-01T00:00:00Z", 3),
+    review("2026-01-05T00:00:00Z", 2),
+    review("2026-01-09T00:00:00Z", 4),
+    review("2026-02-02T00:00:00Z", 3),
+  ];
+  const first = replayCardState(reviews, REAL_PARAMS, "note-abc|recall");
+  const second = replayCardState(reviews, REAL_PARAMS, "note-abc|recall");
+  assertEquals(first, second);
+});
+
+Deno.test("replaying from scratch agrees with applying one at a time — with fuzz on too", () => {
+  // Same property as the unseeded test above, re-asserted for the seeded path:
+  // the seed depends on the card's rep count, which advances as the replay runs,
+  // so incremental and from-scratch have to walk the identical seed sequence.
+  const seed = "note-abc|recall";
+  const reviews = [
+    review("2026-01-01T00:00:00Z", 3),
+    review("2026-01-05T00:00:00Z", 3),
+    review("2026-01-30T00:00:00Z", 1),
+    review("2026-02-01T00:00:00Z", 3),
+  ];
+
+  let incremental = null;
+  for (const r of reviews) {
+    incremental = applyReview(incremental, r, REAL_PARAMS, seed);
+  }
+
+  assertEquals(replayCardState(reviews, REAL_PARAMS, seed), incremental);
+});
+
+Deno.test("fuzz spreads cards answered together across different days", () => {
+  // The reason this was imported at all. Without fuzz every card graduating on
+  // the same rating gets the identical interval, so a session's worth of new
+  // cards comes back as one lump on one day, then again, and again. Measured
+  // before the change: 40 cards learned in one sitting all landed on a single
+  // day. Seeding per card is what breaks up the lump.
+  const learn = (seed: string | undefined) => {
+    let state = applyReview(null, review("2026-01-01T12:00:00Z", 3), REAL_PARAMS, seed);
+    state = applyReview(state, { reviewedAt: state.due, rating: 3 }, REAL_PARAMS, seed);
+    return state.due.toISOString().slice(0, 10);
+  };
+
+  const unfuzzed = new Set(Array.from({ length: 40 }, () => learn(undefined)));
+  assertEquals(unfuzzed.size, 1, "without a seed, every card should land on the same day");
+
+  const fuzzed = new Set(Array.from({ length: 40 }, (_, i) => learn(`note-${i}|recall`)));
+  if (fuzzed.size < 2) {
+    throw new Error(`expected seeded cards to spread over several days, got ${fuzzed.size}`);
+  }
+});
+
+Deno.test("fuzz never moves a card outside Anki's own fuzz range for that interval", () => {
+  // Anki's ranges, read off rslib/src/scheduler/states/fuzz.rs: nothing under
+  // 2.5 days is fuzzed at all, and above that the spread is 1 day plus 0.15/day
+  // between 2.5-7, 0.1/day between 7-20, 0.05/day beyond. A seed that pushed a
+  // card outside that would mean ts-fsrs and Anki had diverged on the algorithm.
+  const unfuzzed = applyReview(null, review("2026-01-01T12:00:00Z", 4), REAL_PARAMS);
+  const baselineDays = Math.round(
+    (unfuzzed.due.getTime() - new Date("2026-01-01T12:00:00Z").getTime()) / 86_400_000,
+  );
+  // 1 day + 0.15*(7-2.5) + 0.1*(20-7) + 0.05*(baseline-20), per the ranges above.
+  const delta = 1 + 0.15 * (Math.min(baselineDays, 7) - 2.5) +
+    0.1 * Math.max(Math.min(baselineDays, 20) - 7, 0) +
+    0.05 * Math.max(baselineDays - 20, 0);
+
+  for (let i = 0; i < 200; i++) {
+    const state = applyReview(null, review("2026-01-01T12:00:00Z", 4), REAL_PARAMS, `note-${i}|recall`);
+    const days = Math.round((state.due.getTime() - new Date("2026-01-01T12:00:00Z").getTime()) / 86_400_000);
+    if (days < Math.round(baselineDays - delta) || days > Math.round(baselineDays + delta)) {
+      throw new Error(
+        `seed note-${i} scheduled ${days}d, outside Anki's fuzz range ` +
+          `[${Math.round(baselineDays - delta)}, ${Math.round(baselineDays + delta)}] around ${baselineDays}d`,
+      );
+    }
+  }
 });

@@ -72,9 +72,33 @@ Deno.test("getDueQueue: respects the daily new limit end to end", async () => {
   assertEquals(queue.length, 1);
 });
 
-Deno.test("submitReview then getDueQueue: an answered card with a future due date drops out of today's queue", async () => {
+Deno.test("submitReview then getDueQueue: a card answered into a days-away due date drops out of today's queue", async () => {
   const store = new InMemoryStore();
   seedNote(store, "n1");
+  seedConfig(store, "tim");
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 4, // Easy graduates a new card straight to a multi-day interval
+    reviewedAt: NOW,
+  });
+
+  const queue = await getDueQueue(store, "tim", NOW);
+  assertEquals(queue, []); // its new due date is days out, well past the learn-ahead window
+});
+
+Deno.test("submitReview then getDueQueue: a card left minutes away is still offered, but last", async () => {
+  // Answering a new card Good puts it on a ~10 minute learning step, inside Anki's
+  // 20-minute learn-ahead window — so it is offered again once nothing else is
+  // left, rather than the session claiming there's nothing to study. It has to
+  // come after the genuinely-due card, though: learn-ahead is the fallback, not a
+  // queue-jump.
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedNote(store, "n2");
   seedConfig(store, "tim");
 
   await submitReview(store, {
@@ -87,7 +111,7 @@ Deno.test("submitReview then getDueQueue: an answered card with a future due dat
   });
 
   const queue = await getDueQueue(store, "tim", NOW);
-  assertEquals(queue, []); // its new due date is in the future relative to NOW
+  assertEquals(queue.map((i) => i.noteId), ["n2", "n1"]);
 });
 
 Deno.test("submitReview twice with the same reviewId is idempotent", async () => {
@@ -206,9 +230,12 @@ Deno.test("D17: reviewing a note's spelling card doesn't affect its recall card'
   });
 
   const queue = await getDueQueue(store, "tim", NOW);
-  // Spelling was just answered (due in the future); recall is untouched and still new/due.
-  assertEquals(queue.length, 1);
-  assertEquals(queue[0].cardKind, "recall");
+  // Recall is untouched and still new, so it comes first. Spelling was just
+  // answered onto a ~10 minute learning step, which keeps it in the session as a
+  // learn-ahead card at the very end — what matters for D17 is that answering one
+  // card moved only that card's schedule.
+  assertEquals(queue.map((i) => i.cardKind), ["recall", "spelling"]);
+  assertEquals((await store.getCardState("n1", "recall"))?.state ?? null, null);
 });
 
 Deno.test("D17: suspending a note's spelling card leaves its recall card reviewable", async () => {
