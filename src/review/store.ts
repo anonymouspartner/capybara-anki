@@ -15,6 +15,7 @@ import type {
   NoteRow,
   ReviewRow,
   SchedulerConfigRow,
+  StateCounts,
 } from "./types.ts";
 
 export interface Store {
@@ -35,6 +36,14 @@ export interface Store {
    * each deck gets its own daily allowance against the one shared
    * `scheduler_config` limit, not one allowance split across every deck. */
   getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts>;
+  /** Every review at or after `since`, across every deck — the stats screen's
+   * (step 6) raw material. Callers wanting all-time numbers (streak, success rate)
+   * pass a `since` far in the past; a real `PostgresStore` may eventually want a
+   * smarter query for those two, but nothing here needs one yet. */
+  getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]>;
+  /** How many notes are in each scheduling bucket right now — the stats screen's
+   * collection-composition breakdown, independent of what's due today. */
+  getCardStateCounts(userId: string): Promise<StateCounts>;
 
   insertReview(row: ReviewRow): Promise<void>;
   upsertCardState(row: CardStateRow): Promise<void>;
@@ -121,6 +130,26 @@ export class InMemoryStore implements Store {
       }
     }
     return Promise.resolve({ newTakenToday, reviewTakenToday });
+  }
+
+  getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]> {
+    return Promise.resolve(
+      [...this.reviews.values()].filter((r) => r.userId === userId && r.reviewedAt.getTime() >= since.getTime()),
+    );
+  }
+
+  getCardStateCounts(_userId: string): Promise<StateCounts> {
+    // Same "doesn't model per-user access" caveat as getDecks — every note in the
+    // fixture counts, since tests construct exactly the set they want counted.
+    let newCount = 0, learningCount = 0, reviewCount = 0, suspendedCount = 0;
+    for (const note of this.notes.values()) {
+      const state = this.cardStates.get(note.id);
+      if (state?.suspended) suspendedCount++;
+      if (state?.state === 1 || state?.state === 3) learningCount++;
+      else if (state?.state === 2) reviewCount++;
+      else newCount++;
+    }
+    return Promise.resolve({ newCount, learningCount, reviewCount, suspendedCount });
   }
 
   insertReview(row: ReviewRow): Promise<void> {

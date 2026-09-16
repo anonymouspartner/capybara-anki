@@ -22,17 +22,10 @@
     font-size: 14px;
     font-variant-numeric: tabular-nums;
   }
-  /* Shared by the stats strip during review and the deck-list counts — both use
-     the same three classes, so the color rule has to apply to the class alone,
-     not scoped to one container (a bug the first render of this caught: scoped
-     to #stats-strip only, the deck list's identical spans rendered in plain
-     foreground text with no color at all). */
-  .new { color: var(--stat-new); }
-  .learning { color: var(--stat-learning); }
-  .review { color: var(--stat-review); }
-  /* A queued-but-not-yet-synced review count (offline, step 3 §6) — deliberately
-     not one of the three colors above, since it isn't a due-queue bucket. */
-  .pending { color: var(--fg-muted); margin-left: auto; }
+  /* .new/.learning/.review/.pending moved to theme.css — stats.html's collection
+     composition blocks need the same three colors, and the bug that made this
+     class-not-container-scoped in the first place (see theme.css's own comment)
+     applies just as much across pages as within one. */
 
   /* Deck list */
   .deck-row {
@@ -52,6 +45,7 @@
     font-size: 13px;
     padding: 20px 0;
   }
+  #session-footer a { color: var(--fg-muted); text-decoration: underline; }
 
   /* Card */
   #card {

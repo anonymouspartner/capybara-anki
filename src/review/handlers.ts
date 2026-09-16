@@ -13,6 +13,7 @@ import {
   previewIntervals,
   validateNoteEdit,
 } from "./mutations.ts";
+import { computeStats, type StatsResult } from "./stats.ts";
 import type { NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
 import type { Store } from "./store.ts";
@@ -99,6 +100,29 @@ export async function getDueQueueWithPreviews(
     return { ...note, preview: previewIntervals(cardState, now, params) };
   }));
   return cards.filter((c): c is DueCard => c !== null);
+}
+
+const DEFAULT_STATS_WINDOW_DAYS = 30;
+// Far enough back that "since this date" is really "all-time" for any real
+// account — streak and success rate need full history, not just the chart window
+// (see stats.ts's own docstring on why one fetch covers both).
+const ALL_TIME = new Date(0);
+
+/** GET the stats screen (step 6): a day-by-day activity histogram over `days`
+ * (default 30), plus all-time success rate, streak, and collection composition.
+ * `getReviewsSince(userId, ALL_TIME)` is one round trip doing double duty — the
+ * histogram bucketing in stats.ts drops whatever falls outside its own window. */
+export async function getStats(
+  store: Store,
+  userId: string,
+  now: Date,
+  days = DEFAULT_STATS_WINDOW_DAYS,
+): Promise<StatsResult> {
+  const [reviews, cardCounts] = await Promise.all([
+    store.getReviewsSince(userId, ALL_TIME),
+    store.getCardStateCounts(userId),
+  ]);
+  return computeStats(reviews, cardCounts, now, days);
 }
 
 export class NotFoundError extends Error {}

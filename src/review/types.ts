@@ -146,3 +146,30 @@ export interface ReviewRow {
   elapsedDays: number;
   scheduledDays: number;
 }
+
+/** How many notes sit in each scheduling bucket right now, across every deck —
+ * the stats screen's collection-composition breakdown (step 6, docs/DESIGN.md §9).
+ * Distinct from `QueueSummary`: that's "what's due today," this is "what state is
+ * every card actually in," so a mature review card that isn't due yet still counts
+ * here. `suspendedCount` overlaps the other three rather than excluding from them
+ * (a suspended card is still new, learning, or review — suspension is orthogonal to
+ * scheduling state, same as everywhere else in this codebase, e.g. `dueQueue.ts`). */
+export interface StateCounts {
+  newCount: number;
+  learningCount: number;
+  reviewCount: number;
+  suspendedCount: number;
+}
+
+/** One day's reviews, split by rating — the stats screen's activity histogram.
+ * `date` is a `YYYY-MM-DD` UTC day key, the same day-boundary simplification
+ * `store.ts`'s `getDailyCounts` already makes (docs/DESIGN.md §11 open question 3
+ * on real day-rollover times is unresolved either way, and this doesn't newly
+ * depend on it). */
+export interface DailyReviewCount {
+  date: string;
+  again: number;
+  hard: number;
+  good: number;
+  easy: number;
+}

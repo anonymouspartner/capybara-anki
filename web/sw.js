@@ -4,7 +4,7 @@
 // queue app.js reads from), not something to fake via an HTTP cache that could
 // silently serve stale due-queue data as if it were current.
 
-const CACHE_NAME = "capybara-anki-shell-v2";
+const CACHE_NAME = "capybara-anki-shell-v3";
 const SHELL_FILES = [
   "/",
   "/index.html",
@@ -14,6 +14,8 @@ const SHELL_FILES = [
   "/theme.css",
   "/scan.html",
   "/scan.js",
+  "/stats.html",
+  "/stats.js",
 ];
 
 self.addEventListener("install", (event) => {

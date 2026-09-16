@@ -60,7 +60,8 @@ Inherited from `capybara-bot`, and they apply here too:
 | 3 · Offline (service worker, IndexedDB, queued reviews) | **done** — see [`web/offline.js`](web/offline.js) and [`web/sw.js`](web/sw.js) |
 | 4 · Real migration | blocked on a live Supabase project (Claude never deploys/touches Supabase without an explicit, in-the-moment request) |
 | 5 · Scanner (camera, canvas resize, `/scan`) | **done** — see [`src/scan/`](src/scan/), [`supabase/functions/scan/`](supabase/functions/scan/), [`web/scan.html`](web/scan.html) |
-| 6 · Pronunciation, stats | not started |
+| 6 · Stats | **done** — see [`src/review/stats.ts`](src/review/stats.ts) and [`web/stats.html`](web/stats.html) |
+| 6 · Pronunciation | blocked on open design questions (docs/DESIGN.md §11, items 4-5) — needs a real look at the actual Pronunciation/Grammar/Spelling deck contents |
 
 See §9 of the design doc for why the migration spike comes first.
 
@@ -202,3 +203,25 @@ files and 401'd them; and pulling the toolbar's colors into a shared `theme.css`
 (used by both `index.html` and `scan.html`) added a `.icon-btn { display:
 inline-block }` rule that silently outranked the `hidden` attribute's own default,
 so the back button stopped disappearing on the deck-list screen. Both fixed.
+
+## Stats
+
+`src/review/stats.ts` (step 6, docs/DESIGN.md §8.1) — a day-by-day activity
+histogram (zero-filled, so a quiet day is a real zero not a missing bar), all-time
+success rate (`null`, not `0`, with no reviews ever — "no data" and "0%" are
+different things), a current streak (today not having a review yet doesn't break
+an otherwise-active streak), and the collection's new/learning/review/suspended
+composition. All pure functions over already-fetched rows, 12 tests.
+
+`GET /sync/stats?days=N` (`supabase/functions/sync/`) and `web/stats.html`/`stats.js`
+round it out — a hand-rolled stacked-bar chart, no charting library, linked from
+the deck list's session footer. Verified with Playwright against the demo server,
+seeded with six backdated synthetic reviews so the chart/streak/success-rate show
+real shapes rather than an all-zero screen on first load.
+
+**Pronunciation** (the other half of step 6) is genuinely blocked, not started:
+docs/DESIGN.md §11 open questions 4 and 5 — whether the real `Pronunciation` deck
+shares this app's vocabulary schema, and whether `Grammar`/`Spelling`/`Capybara+`'s
+second card template are in scope — need a real look at the actual deck contents
+to answer, the same way §7.5's five migration findings all came from reading the
+real export rather than guessing.

@@ -78,3 +78,15 @@ body {
 #toolbar .icon-btn[hidden] { display: none; }
 #toolbar h1 { font-size: 17px; margin: 0; font-weight: 600; }
 main { max-width: 480px; margin: 0 auto; padding: 0 16px; }
+
+/* Shared new/learning/review color convention — index.html's stats strip and
+ * deck-list counts, and stats.html's collection-composition blocks all use these
+ * same three classes, so the rule has to apply to the class alone, not scoped to
+ * one container (a bug the first render of this caught: scoped to #stats-strip
+ * only, the deck list's identical spans rendered with no color at all). */
+.new { color: var(--stat-new); }
+.learning { color: var(--stat-learning); }
+.review { color: var(--stat-review); }
+/* A queued-but-not-yet-synced review count (offline, step 3 §6) — deliberately
+ * not one of the three colors above, since it isn't a due-queue bucket. */
+.pending { color: var(--fg-muted); margin-left: auto; }

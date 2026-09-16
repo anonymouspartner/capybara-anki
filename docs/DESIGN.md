@@ -725,6 +725,46 @@ precision transcription-versus-target does not have.
 The existing `scripts/anki_pronunciation/` in the bot repo already generates reference
 audio via ElevenLabs. That stays as-is; only the scoring side is new.
 
+**Status: not started, and genuinely blocked** — not on infrastructure like step 4,
+but on open questions §11 already lists and never resolved: whether the real
+`Capybara::Pronunciation(::Ukrainian)` deck's notes share the vocabulary schema this
+reviewer knows how to render at all (open question 4), and, separately, whether
+`Capybara::Grammar`/`Capybara::Spelling` — including the `Capybara+` note type's
+second card (open question 5) — are in scope for a v1 cutover. Both need a real look
+at the actual deck contents to answer, the same way §7.5's five findings all came
+from reading the real export rather than assuming. Guessing the note shape and
+building against it would repeat exactly the mistake step 0 existed to avoid.
+
+### 8.1 Stats — the other half of step 6, and separable from pronunciation
+
+**Status: done.** Unlike pronunciation, this needed no open question resolved: it
+reads only `reviews` and `card_state`, both already fully specified. `src/review/
+stats.ts` computes, over already-fetched rows (same split as `dueQueue.ts`):
+
+- **A day-by-day activity histogram**, zero-filled so a quiet day is a real zero,
+  not a missing bar — `reviewsByDay`.
+- **All-time success rate** — the fraction of reviews rated anything but Again.
+  `null` (not `0`) with zero reviews ever, since "no data yet" and "0% success"
+  are different things a screen should say differently.
+- **Current streak** — consecutive days with at least one review, walking back
+  from today. Not having reviewed yet *today* doesn't break a streak that's still
+  active; only a missed prior day does.
+- **Collection composition** (`StateCounts`) — new/learning/review/suspended
+  counts across every note, independent of what's due today. `suspended` overlaps
+  the other three rather than excluding from them, matching how `dueQueue.ts`
+  already treats suspension as orthogonal to scheduling state everywhere else.
+
+`handlers.ts`'s `getStats` fetches all-time reviews in one round trip (`since` the
+epoch) and lets the histogram's own bucketing drop whatever falls outside its
+window — one fetch does double duty for both the windowed chart and the all-time
+numbers, rather than two queries. `GET /sync/stats?days=N` (`supabase/functions/
+sync/`) and `web/stats.html`/`stats.js` (a hand-rolled stacked-bar chart, no
+charting library — this is the one part of `web/` genuinely free to add a
+dependency and still doesn't need one) round it out. 12 tests. Verified with
+Playwright against the demo server, seeded with six backdated synthetic reviews
+purely to give the chart/streak/success-rate real shapes on first load rather
+than an all-zero screen.
+
 ---
 
 ## 9. Build order
@@ -740,7 +780,7 @@ the risk survivable.
 | **3** | Offline: service worker, IndexedDB, queued reviews | **Done.** `web/sw.js` + `web/offline.js` (§6.2), verified with Playwright: an offline answer queues and shows a pending count, a reconnect flushes it, and a full page reload while offline still renders the cached deck list. Turns it into something that replaces AnkiDroid rather than supplements it. |
 | 4 | Real migration, run for real | Blocked on a live Supabase project with this schema applied — Claude never deploys or touches Supabase without an explicit, in-the-moment request (capybara-bot's CLAUDE.md, this repo's own ground rules), so this waits for the maintainer. |
 | **5** | Scanner: camera, canvas resize, `/scan` edge function | **Done.** `src/scan/` (extract + import, §4.1, 13 tests), `supabase/functions/scan/`, `web/scan.html`/`scan.js`, verified end-to-end with Playwright against the demo server. Deletes the export/import tax (§1.2). |
-| 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. |
+| 6 | Pronunciation, stats | Genuinely separable; neither blocks daily use. **Stats done** (§8.1, 12 tests). **Pronunciation blocked** on open questions 4/5 (§11) — needs a real look at the actual `Pronunciation`/`Grammar`/`Spelling` deck contents, not a guess. |
 
 Step 0 was the whole point of doing this first: a day of work that either de-risks the
 project or saves a month. It found five real gaps between plan and reality (§7.5) and

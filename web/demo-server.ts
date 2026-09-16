@@ -21,6 +21,7 @@ import {
   editNote,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getStats,
   setSuspended,
   submitReview,
 } from "../src/review/handlers.ts";
@@ -74,14 +75,32 @@ const demoNotes: NoteRow[] = [
 ];
 for (const note of demoNotes) store.notes.set(note.id, note);
 
-// One already-reviewed, currently-due card and one suspended card, so the deck
-// list and review flow both have more than "all new" to show.
+// One already-reviewed, currently-due card, so the deck list and review flow both
+// have more than "all new" to show.
 const dueYesterday: CardStateRow = {
   noteId: "demo-3", due: new Date(Date.now() - 86_400_000), stability: 4.2,
   difficulty: 5.6, state: 2, reps: 2, lapses: 0,
   lastReview: new Date(Date.now() - 5 * 86_400_000), suspended: false, lastUserId: DEMO_USER,
 };
 store.cardStates.set("demo-3", dueYesterday);
+
+// A handful of backdated reviews purely for the stats screen demo (step 6) — never
+// real study history, just enough days of activity that the histogram/streak/
+// success-rate show real shapes on first load instead of an all-zero screen.
+// Inserted directly into the map (not via submitReview) since these predate
+// "today" and so can't affect today's daily new/review limits either way.
+const DAY_MS = 86_400_000;
+for (let i = 0; i < 6; i++) {
+  store.reviews.set(`demo-review-${i}`, {
+    id: `demo-review-${i}`,
+    noteId: "demo-3",
+    userId: DEMO_USER,
+    rating: i === 2 ? 1 : 3, // one Again in the middle, Good otherwise
+    reviewedAt: new Date(Date.now() - i * DAY_MS),
+    elapsedDays: 1,
+    scheduledDays: 1,
+  });
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -150,6 +169,11 @@ Deno.serve({ port: 8787 }, async (req) => {
   if (req.method === "GET" && url.pathname === "/sync/due") {
     const deck = url.searchParams.get("deck") ?? undefined;
     return json(await getDueQueueWithPreviews(store, DEMO_USER, new Date(), deck));
+  }
+  if (req.method === "GET" && url.pathname === "/sync/stats") {
+    const daysParam = Number(url.searchParams.get("days"));
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : undefined;
+    return json(await getStats(store, DEMO_USER, new Date(), days));
   }
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();
