@@ -180,31 +180,38 @@ export class PostgresStore implements Store {
 
   async getDueCandidates(userId: string, deck?: string): Promise<DueCandidate[]> {
     const language = await this.learningLanguage(userId);
-    let noteQuery = this.client.from("anki_notes").select("id, has_spelling").eq("language", language);
+    // A two-step fetch-notes-then-`.in("note_id", noteIds)` query used to sit here.
+    // It broke the moment a real account had a few hundred notes: PostgREST renders
+    // `.in()` as a literal comma-separated list in the request URL, and a few hundred
+    // UUIDs blows past what the underlying HTTP client will send at all — "error
+    // sending request", not even a graceful 4xx. Found live, backfilling 572 real
+    // notes for one account (2026-09-16). Embedding `anki_card_state` through its own
+    // FK to `anki_notes.id` gets every candidate's state in the one query PostgREST
+    // was always meant to answer this with, no id list of any size involved.
+    let noteQuery = this.client
+      .from("anki_notes")
+      .select("id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
+      .eq("language", language);
     if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
-    const { data: notes, error: notesErr } = await noteQuery;
-    if (notesErr) throw new Error(`getDueCandidates: ${notesErr.message}`);
-    if (!notes || notes.length === 0) return [];
+    const { data: notes, error } = await noteQuery;
+    if (error) throw new Error(`getDueCandidates: ${error.message}`);
+    if (!notes) return [];
 
-    const noteIds = notes.map((n) => n.id as string);
-    const { data: states, error: statesErr } = await this.client
-      .from("anki_card_state")
-      .select("note_id, card_kind, due, state, suspended")
-      .in("note_id", noteIds);
-    if (statesErr) throw new Error(`getDueCandidates: ${statesErr.message}`);
-
-    const stateMap = new Map((states ?? []).map((s) => [cardKey(s.note_id as string, s.card_kind as CardKind), s]));
     const candidates: DueCandidate[] = [];
     for (const note of notes) {
+      const states = (note.anki_card_state ?? []) as Array<
+        { card_kind: CardKind; due: string | null; state: DueCandidate["state"]; suspended: boolean }
+      >;
+      const stateByKind = new Map(states.map((s) => [s.card_kind, s]));
       const cardKinds: CardKind[] = note.has_spelling ? ["recall", "spelling"] : ["recall"];
       for (const kind of cardKinds) {
-        const state = stateMap.get(cardKey(note.id as string, kind));
+        const state = stateByKind.get(kind);
         candidates.push({
           noteId: note.id as string,
           cardKind: kind,
-          due: state?.due ? new Date(state.due as string) : null,
-          state: (state?.state as DueCandidate["state"]) ?? null,
-          suspended: (state?.suspended as boolean) ?? false,
+          due: state?.due ? new Date(state.due) : null,
+          state: state?.state ?? null,
+          suspended: state?.suspended ?? false,
         });
       }
     }
@@ -263,28 +270,27 @@ export class PostgresStore implements Store {
 
   async getCardStateCounts(userId: string): Promise<StateCounts> {
     const language = await this.learningLanguage(userId);
-    const { data: notes, error: notesErr } = await this.client
+    // Same fix, same reason, as getDueCandidates above: embed anki_card_state through
+    // its FK rather than fetching note ids and re-querying with `.in(noteIds)`, which
+    // breaks outright once a real account has a few hundred notes.
+    const { data: notes, error } = await this.client
       .from("anki_notes")
-      .select("id, has_spelling")
+      .select("id, has_spelling, anki_card_state(card_kind, state, suspended)")
       .eq("language", language);
-    if (notesErr) throw new Error(`getCardStateCounts: ${notesErr.message}`);
+    if (error) throw new Error(`getCardStateCounts: ${error.message}`);
     if (!notes || notes.length === 0) {
       return { newCount: 0, learningCount: 0, reviewCount: 0, suspendedCount: 0 };
     }
 
-    const noteIds = notes.map((n) => n.id as string);
-    const { data: states, error: statesErr } = await this.client
-      .from("anki_card_state")
-      .select("note_id, card_kind, state, suspended")
-      .in("note_id", noteIds);
-    if (statesErr) throw new Error(`getCardStateCounts: ${statesErr.message}`);
-    const stateMap = new Map((states ?? []).map((s) => [cardKey(s.note_id as string, s.card_kind as CardKind), s]));
-
     let newCount = 0, learningCount = 0, reviewCount = 0, suspendedCount = 0;
     for (const note of notes) {
+      const states = (note.anki_card_state ?? []) as Array<
+        { card_kind: CardKind; state: CardStateRow["state"]; suspended: boolean }
+      >;
+      const stateByKind = new Map(states.map((s) => [s.card_kind, s]));
       const cardKinds: CardKind[] = note.has_spelling ? ["recall", "spelling"] : ["recall"];
       for (const kind of cardKinds) {
-        const state = stateMap.get(cardKey(note.id as string, kind));
+        const state = stateByKind.get(kind);
         if (state?.suspended) suspendedCount++;
         if (state?.state === 1 || state?.state === 3) learningCount++;
         else if (state?.state === 2) reviewCount++;
