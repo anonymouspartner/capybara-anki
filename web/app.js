@@ -26,15 +26,7 @@
 
 import * as offline from "./offline.js";
 import { captureTokenFromUrl, getToken } from "./auth.js";
-
-// Supabase Edge Functions are always reached under /functions/v1/<slug> — there is
-// no way to serve them at bare root (confirmed against Supabase's own routing docs,
-// not assumed). This app is hosted BY one of those functions too (`app`), so every
-// API path below (still written as e.g. "/sync/review" everywhere it's used as an
-// identifier — cache keys, the offline-queue comparison below) gets this prefix
-// applied at the one point it actually becomes a fetch URL, not baked into the
-// literal itself.
-const API_BASE = "/functions/v1";
+import { API_BASE } from "./config.js";
 
 async function api(path, options = {}) {
   const token = getToken();

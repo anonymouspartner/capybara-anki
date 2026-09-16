@@ -11,15 +11,18 @@
  * pronunciation notes never have a spelling card). One path ever mutates
  * `card_state`, not two.
  *
- * **Not deployed.** Same real `PostgresStore` as `../sync/index.ts` now
- * (`../_shared/postgresStore.ts`, against the live `anki_*` tables) — deploying
- * this function is still a separate, undone step, same reasoning as that file.
+ * **Deployed** (2026-09-16), same real `PostgresStore` as `../sync/index.ts`
+ * (`../_shared/postgresStore.ts`, against the live `anki_*` tables) — on an
+ * explicit, in-the-moment request, same as that file.
  *
  * Routes:
  *   POST /pronounce/score → { noteId, audioBase64, mediaType } →
  *                            { transcript, similarity, bucket, rating }
  *
  * Auth: the same D13 bearer token as `/sync` and `/scan` (`../../../src/auth.ts`).
+ *
+ * CORS: see `../sync/index.ts`'s own comment on this — same reasoning, `web/`
+ * is a different origin now (GitHub Pages).
  */
 
 import { createWhisperClient, transcribeAudio } from "../../../src/pronunciation/transcribe.ts";
@@ -28,6 +31,7 @@ import { TranscriptionError } from "../../../src/pronunciation/types.ts";
 import type { NoteRow } from "../../../src/review/types.ts";
 import { resolveUserId } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
+import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 
 /** Only what this function actually needs — reading one note's target text.
  * `PostgresStore` implements the full `Store`, a strict superset of this. */
@@ -51,7 +55,7 @@ function getStore(): NoteReader {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CORS_HEADERS },
   });
 }
 
@@ -95,6 +99,9 @@ async function route(req: Request, store: NoteReader, apiKey: string): Promise<R
 }
 
 Deno.serve(async (req) => {
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
+
   if (!resolveUserId(req)) return json({ error: "unauthorized" }, 401);
 
   const apiKey = Deno.env.get("OPENAI_API_KEY");

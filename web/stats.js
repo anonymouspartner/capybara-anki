@@ -4,10 +4,7 @@
 // collection's current state composition.
 
 import { captureTokenFromUrl, getToken } from "./auth.js";
-
-// See app.js's own comment on this — Supabase Edge Functions only ever answer
-// under /functions/v1/<slug>, never bare root.
-const API_BASE = "/functions/v1";
+import { API_BASE } from "./config.js";
 
 const contentEl = document.getElementById("content");
 

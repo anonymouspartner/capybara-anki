@@ -14,10 +14,7 @@
 // with no progress-bar bookkeeping to get right.
 
 import { captureTokenFromUrl, getToken } from "./auth.js";
-
-// See app.js's own comment on this — Supabase Edge Functions only ever answer
-// under /functions/v1/<slug>, never bare root.
-const API_BASE = "/functions/v1";
+import { API_BASE } from "./config.js";
 
 const MAX_IMAGE_EDGE = 1568;
 const JPEG_QUALITY = 0.85;

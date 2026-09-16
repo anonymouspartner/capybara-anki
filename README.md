@@ -58,7 +58,7 @@ Inherited from `capybara-bot`, and they apply here too:
 |---|---|
 | 0 · Migration spike — read an export, report what is in it | **done, verified against a real export** — see [`migration/`](migration/) |
 | 1 · Schema, review log, FSRS replay | **done** — see [`supabase/migrations/`](supabase/migrations/) and [`src/fsrs/`](src/fsrs/) |
-| 2 · Reviewer (due queue, decks, interval previews, night theme) | **done, deployed** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`supabase/functions/app/`](supabase/functions/app/), [`web/`](web/) |
+| 2 · Reviewer (due queue, decks, interval previews, night theme) | **done, deployed** — see [`src/review/`](src/review/), [`supabase/functions/sync/`](supabase/functions/sync/), [`web/`](web/) (hosted on GitHub Pages, not Supabase — see below) |
 | 3 · Offline (service worker, IndexedDB, queued reviews) | **done** — see [`web/offline.js`](web/offline.js) and [`web/sw.js`](web/sw.js) |
 | 4 · Real migration | schema applied to the live project; the bot now also dual-writes new vocabulary into it (`source: 'bot'`). `migration/`'s CLI (importing an existing Anki collection) still doesn't implement D17/D18 (see step 6 below), and the ~11,300 pre-existing `vocabulary` rows are a real, still-open backfill decision (docs/DESIGN.md §11 item 2) |
 | 5 · Scanner (camera, canvas resize, `/scan`) | **done** — see [`src/scan/`](src/scan/), [`supabase/functions/scan/`](supabase/functions/scan/), [`web/scan.html`](web/scan.html) |
@@ -121,15 +121,23 @@ postgresStore.ts`), **deployed and verified live** against the actual project
 scheduling decision happens server-side and the browser's job is just fetch →
 render → post an answer → next card.
 
-**`web/` is served by its own edge function, `supabase/functions/app/`** —
-checked against Supabase's own routing docs rather than assumed: a deployed
-function's paths are always prefixed with its own slug, there is no way to
-serve anything at bare root on `*.supabase.co`. `app.js`/`scan.js`/`stats.js`
-build every API call as `/functions/v1/<slug>/...` accordingly (each has its
-own comment on this); `web/demo-server.ts` strips the same prefix so local dev
-stays a faithful stand-in instead of a second, diverging assumption. Verified
-with Playwright against the demo server under the real prefixed path
-(`/functions/v1/app/#t=...`): deck list loads, reveal → rate → advance all work.
+**`web/` is a static site, hosted on GitHub Pages** (`.github/workflows/pages.yml`),
+not by Supabase — Supabase Edge Functions were tried first (a function named `app`
+serving `web/`'s files) and found to be a dead end: Supabase silently rewrites any
+`text/html` edge-function response to `text/plain` (confirmed against a real deployed
+function and Supabase's own docs), which makes serving an HTML page from a function
+impossible, full stop. That `app` function is gone; `web/` is now plain static files
+with no server of its own, and every real API call is cross-origin to the Supabase
+project, which is why `sync`/`scan`/`pronounce` all carry CORS headers now
+(`supabase/functions/_shared/cors.ts`). `web/config.js` is the one per-instance line
+(`PRODUCTION_API_BASE`) a new couple's maintainer edits, since a static site has no
+server-side secret store to read a project URL from the way an edge function can.
+`web/demo-server.ts` still serves both the static shell and a fake API from one
+origin for local dev, where `config.js` deliberately uses a relative same-origin path
+instead and CORS never enters into it. Verified with Playwright against the demo
+server: deck list loads, reveal → rate → advance all work; CORS itself verified
+against the live project with a real cross-origin `curl` (preflight and real
+responses both carry `access-control-allow-origin`).
 
 **Redesigned to match real AnkiDroid's night theme**, after seeing actual
 screenshots of it: a deck-list landing screen (Ukrainian/English, each with its own

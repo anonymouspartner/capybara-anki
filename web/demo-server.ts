@@ -154,26 +154,19 @@ async function serveStatic(pathname: string): Promise<Response> {
 Deno.serve({ port: 8787 }, async (req) => {
   const url = new URL(req.url);
 
-  // Real Supabase Edge Functions only ever answer under /functions/v1/<slug> —
-  // web/app.js|scan.js|stats.js call every API path with that prefix baked in,
-  // and web/'s own static files are served BY one such function (`app`), not at
-  // bare root (see both functions' own comments on this). Stripping the right
-  // prefix here, once, before any route matching below, is what keeps this demo
-  // server a faithful stand-in for the real deployed topology rather than a
-  // second, silently-diverging assumption about where things live.
-  if (url.pathname === "/functions/v1/app" || url.pathname.startsWith("/functions/v1/app/")) {
-    return serveStatic(url.pathname.slice("/functions/v1/app".length) || "/");
-  }
-  const apiPathname = url.pathname.startsWith("/functions/v1/") ? url.pathname.slice("/functions/v1".length) : url.pathname;
-
+  // web/config.js sends every real API call to the production Supabase project
+  // (a different origin) except when running against this demo server, where
+  // it deliberately uses bare same-origin paths instead — this server serves
+  // both the static shell and a fake API from one process, so there's no
+  // cross-origin/prefix concern to model here at all.
+  //
   // "/scan/" (trailing slash), not a bare "/scan" prefix — "/scan.html"/"/scan.js"
   // are static files this same check would otherwise wrongly route into the
   // auth-gated API branch below (caught by curling them directly, not by eye).
   const apiPrefixes = ["/sync/", "/scan/", "/pronounce/"];
-  if (!apiPrefixes.some((p) => apiPathname.startsWith(p))) {
+  if (!apiPrefixes.some((p) => url.pathname.startsWith(p))) {
     return serveStatic(url.pathname);
   }
-  url.pathname = apiPathname;
 
   const auth = req.headers.get("authorization");
   if (auth !== `Bearer ${DEMO_TOKEN}`) return json({ error: "unauthorized" }, 401);
