@@ -6,9 +6,10 @@
  * immediately; `PATCH /sync/note/:id` (edit-in-place, D11) is the repair path for
  * anything the model got wrong.
  *
- * **Not deployed. Not deployable yet, on purpose — see PostgresStore in
- * `../sync/index.ts`.** This function imports the same `Store` interface and has
- * the identical gap: real routing and auth, no real database behind it.
+ * **Not deployed.** Same real `PostgresStore` as `../sync/index.ts` and
+ * `../pronounce/index.ts` now (`../_shared/postgresStore.ts`, against the live
+ * `anki_*` tables) — deploying this function is still a separate, undone step,
+ * same reasoning as those files.
  *
  * Routes:
  *   POST /scan/page  → { imageBase64, mediaType, deck?, language? }
@@ -31,21 +32,9 @@
 import { createMessagesClient, extractVocabularyFromPage } from "../../../src/scan/extract.ts";
 import { importExtractedCards, type NoteCreator } from "../../../src/scan/import.ts";
 import { PageExtractionError } from "../../../src/scan/types.ts";
-import type { NewNote } from "../../../src/review/types.ts";
 import { resolveUserId } from "../../../src/auth.ts";
+import { PostgresStore } from "../_shared/postgresStore.ts";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.39.0";
-
-// ---------------------------------------------------------------------------
-// Store — NOT YET IMPLEMENTED (see supabase/functions/sync/index.ts's own copy
-// of this note; the same real-project-first reasoning applies here unchanged)
-// ---------------------------------------------------------------------------
-
-class PostgresStore implements NoteCreator {
-  constructor(_supabaseUrl: string, _serviceRoleKey: string) {}
-  createNote(_note: NewNote): Promise<string> {
-    throw new Error("PostgresStore is not implemented yet — see supabase/functions/sync/index.ts");
-  }
-}
 
 function getStore(): NoteCreator {
   const url = Deno.env.get("SUPABASE_URL");

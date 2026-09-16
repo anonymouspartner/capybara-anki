@@ -188,8 +188,9 @@ content at all.
 
 `supabase/functions/scan/` is the real edge function shape — routing and D13 auth
 (factored into `src/auth.ts`, shared with `sync/`, once two functions needed the
-identical bearer-token check), **not deployed, not deployable yet** (`createNote`
-is a `PostgresStore` stub, same honest gap as `sync/`'s). `web/scan.html`/`scan.js`
+identical bearer-token check), backed by the same real `PostgresStore` as
+`sync/`/`pronounce/` now — **not deployed yet**, deploying stays a separate,
+explicit step. `web/scan.html`/`scan.js`
 are D8's browser half: `createImageBitmap` (applies EXIF orientation itself) plus a
 canvas resize to the same 1568px edge and 0.85 JPEG quality the Python side used,
 entirely client-side before a photo ever leaves the device.
