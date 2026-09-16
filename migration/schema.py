@@ -64,6 +64,15 @@ class CardState:
     suspended: bool
     last_user_id: str
     card_kind: str = "recall"  # 'recall' | 'spelling'
+    # Not bookkeeping — required to correctly resume FSRS scheduling (the live
+    # schema's own comment on this column, docs/DESIGN.md §5: `card_state.due`/
+    # `state` alone are enough to place a migrated card in the due queue, but
+    # `src/review/mutations.ts`'s `toFsrsCardState` treats a card with no
+    # `lastReview` as brand new — losing every bit of migrated stability/difficulty
+    # on its very next real review — unless this is set from the same revlog the
+    # card's own reviews already carry. Derived from the latest of THIS card's
+    # reviews (see cli.py), not guessed: None only for a genuinely unreviewed card.
+    last_review: datetime | None = None
 
 
 @dataclass

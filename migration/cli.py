@@ -33,6 +33,7 @@ from migration.transform import (
     PRONUNCIATION_FIELDS,
     card_kind_for,
     compute_elapsed_days,
+    latest_review_time,
     resolve_vocab_deck,
     transform_card_state,
     transform_note,
@@ -121,11 +122,13 @@ def run_migration(export_path: Path, user_id: str, deck_prefix: str = "Capybara:
 
         for card in cards:
             kind = card_kind_for(card, deck_names, deck_prefix)
-            card_state, cs_warnings = transform_card_state(card, note_uuid, user_id, crt, card_kind=kind)
+            card_revlog = revlog_by_card.get(card.id, [])
+            card_state, cs_warnings = transform_card_state(
+                card, note_uuid, user_id, crt, card_kind=kind, last_review=latest_review_time(card_revlog)
+            )
             card_states.append(card_state)
             warnings.extend(cs_warnings)
 
-            card_revlog = revlog_by_card.get(card.id, [])
             elapsed = compute_elapsed_days(card_revlog)
             for r in card_revlog:
                 reviews.append(transform_review(r, note_uuid, user_id, elapsed[r.id], card_kind=kind))

@@ -258,7 +258,12 @@ def _due_to_date(card: RawCard, collection_created_at: int) -> tuple[date | None
 
 
 def transform_card_state(
-    card: RawCard, note_id: str, user_id: str, collection_created_at: int, card_kind: str = "recall"
+    card: RawCard,
+    note_id: str,
+    user_id: str,
+    collection_created_at: int,
+    card_kind: str = "recall",
+    last_review: datetime | None = None,
 ) -> tuple[CardState, list[str]]:
     warnings: list[str] = []
     due, due_warning = _due_to_date(card, collection_created_at)
@@ -274,6 +279,14 @@ def transform_card_state(
             "changed name — see migration/config.py's candidate-key pattern for "
             "the fix once a real export shows the right one."
         )
+    if card.type != 0 and last_review is None:
+        warnings.append(
+            f"card {card.id}: no revlog rows found for a non-new card — "
+            "last_review stays None, so the app will treat this card as brand "
+            "new on its next real review despite its migrated stability/"
+            "difficulty. Worth checking by hand; a card can only be non-new "
+            "in Anki because it was reviewed at least once."
+        )
 
     return (
         CardState(
@@ -287,6 +300,7 @@ def transform_card_state(
             suspended=(card.queue == -1),
             last_user_id=user_id,
             card_kind=card_kind,
+            last_review=last_review,
         ),
         warnings,
     )
@@ -328,3 +342,13 @@ def compute_elapsed_days(reviews_for_card: list[RawReview]) -> dict[int, int]:
             out[r.id] = max((r.id - previous_ts_ms) // 86_400_000, 0)
         previous_ts_ms = r.id
     return out
+
+
+def latest_review_time(card_revlog: list[RawReview]) -> datetime | None:
+    """The real value CardState.last_review needs (see its docstring in schema.py)
+    — the most recent of THIS card's own reviews, or None for a card with no
+    revlog at all (consistent with it genuinely being new)."""
+    if not card_revlog:
+        return None
+    latest = max(card_revlog, key=lambda r: r.id)
+    return datetime.fromtimestamp(latest.id / 1000, tz=timezone.utc)
