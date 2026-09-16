@@ -4,19 +4,25 @@
 // queue app.js reads from), not something to fake via an HTTP cache that could
 // silently serve stale due-queue data as if it were current.
 
-const CACHE_NAME = "capybara-anki-shell-v3";
-const SHELL_FILES = [
-  "/",
-  "/index.html",
-  "/app.js",
-  "/offline.js",
-  "/auth.js",
-  "/theme.css",
-  "/scan.html",
-  "/scan.js",
-  "/stats.html",
-  "/stats.js",
+const CACHE_NAME = "capybara-anki-shell-v5";
+// Hosted on GitHub Pages (a project site: https://<owner>.github.io/<repo>/,
+// not domain root) — these are resolved against sw.js's own URL at runtime,
+// not hardcoded, so the shell caches correctly regardless of the subpath (or
+// a future custom domain) it's actually served from.
+const SHELL_FILE_NAMES = [
+  "./",
+  "index.html",
+  "app.js",
+  "config.js",
+  "offline.js",
+  "auth.js",
+  "theme.css",
+  "scan.html",
+  "scan.js",
+  "stats.html",
+  "stats.js",
 ];
+const SHELL_FILES = SHELL_FILE_NAMES.map((name) => new URL(name, self.location).href);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -34,14 +40,13 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  // Never intercept API calls — /scan (the Claude call) and /pronounce (the
-  // Whisper call, D18) need network as much as /sync does, and a cache-first
-  // match against a POST it never cached would only paper over that rather than
-  // fail honestly.
-  if (
-    url.pathname.startsWith("/sync") || url.pathname.startsWith("/scan") ||
-    url.pathname.startsWith("/pronounce")
-  ) return;
+  // Never intercept API calls — sync/scan/pronounce now live on a different
+  // origin entirely (Supabase, not this GitHub Pages site), and a cache-first
+  // match against a POST it never cached would only paper over a real network
+  // failure rather than fail honestly. Checking origin rather than a specific
+  // path prefix is what makes that true regardless of which Supabase project
+  // (i.e. which couple's instance) this happens to be.
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached ?? fetch(event.request)),

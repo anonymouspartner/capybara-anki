@@ -154,6 +154,12 @@ async function serveStatic(pathname: string): Promise<Response> {
 Deno.serve({ port: 8787 }, async (req) => {
   const url = new URL(req.url);
 
+  // web/config.js sends every real API call to the production Supabase project
+  // (a different origin) except when running against this demo server, where
+  // it deliberately uses bare same-origin paths instead — this server serves
+  // both the static shell and a fake API from one process, so there's no
+  // cross-origin/prefix concern to model here at all.
+  //
   // "/scan/" (trailing slash), not a bare "/scan" prefix — "/scan.html"/"/scan.js"
   // are static files this same check would otherwise wrongly route into the
   // auth-gated API branch below (caught by curling them directly, not by eye).

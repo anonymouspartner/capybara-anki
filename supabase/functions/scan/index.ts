@@ -6,10 +6,9 @@
  * immediately; `PATCH /sync/note/:id` (edit-in-place, D11) is the repair path for
  * anything the model got wrong.
  *
- * **Not deployed.** Same real `PostgresStore` as `../sync/index.ts` and
- * `../pronounce/index.ts` now (`../_shared/postgresStore.ts`, against the live
- * `anki_*` tables) — deploying this function is still a separate, undone step,
- * same reasoning as those files.
+ * **Deployed** (2026-09-16), same real `PostgresStore` as `../sync/index.ts`
+ * and `../pronounce/index.ts` (`../_shared/postgresStore.ts`, against the live
+ * `anki_*` tables) — on an explicit, in-the-moment request, same as those files.
  *
  * Routes:
  *   POST /scan/page  → { imageBase64, mediaType, deck?, language? }
@@ -27,6 +26,9 @@
  * function's own secret (`ANTHROPIC_API_KEY`, capybara-bot's existing naming),
  * never something a client supplies (unlike the Streamlit app's sidebar text box,
  * which existed only because Streamlit has no server-side secret of its own).
+ *
+ * CORS: see `../sync/index.ts`'s own comment on this — same reasoning, `web/`
+ * is a different origin now (GitHub Pages).
  */
 
 import { createMessagesClient, extractVocabularyFromPage } from "../../../src/scan/extract.ts";
@@ -34,6 +36,7 @@ import { importExtractedCards, type NoteCreator } from "../../../src/scan/import
 import { PageExtractionError } from "../../../src/scan/types.ts";
 import { resolveUserId } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
+import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.39.0";
 
 function getStore(): NoteCreator {
@@ -52,7 +55,7 @@ function getStore(): NoteCreator {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CORS_HEADERS },
   });
 }
 
@@ -103,6 +106,9 @@ async function route(req: Request, store: NoteCreator, apiKey: string): Promise<
 }
 
 Deno.serve(async (req) => {
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
+
   // Gates access only — a scanned note isn't attributed to whoever scanned it.
   // `notes` is a shared pool (D2), so unlike `/sync` there's no per-user id to
   // thread through to a store call here.

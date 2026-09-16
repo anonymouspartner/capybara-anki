@@ -1,0 +1,42 @@
+name: pages
+
+# Publishes web/ (the reviewer PWA) to GitHub Pages on every push to main that
+# touches it. web/ has no build step by design (docs/DESIGN.md, README) — this
+# workflow does not build anything, it just uploads the directory as-is.
+#
+# One-time setup this workflow cannot do itself: Settings -> Pages -> Source
+# must be set to "GitHub Actions" for this to take effect. That's a repo
+# permission this token doesn't have — a human flips it once.
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Upload web/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

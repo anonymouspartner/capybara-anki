@@ -14,6 +14,7 @@
 // with no progress-bar bookkeeping to get right.
 
 import { captureTokenFromUrl, getToken } from "./auth.js";
+import { API_BASE } from "./config.js";
 
 const MAX_IMAGE_EDGE = 1568;
 const JPEG_QUALITY = 0.85;
@@ -51,7 +52,7 @@ async function toJpegBase64(file) {
 
 async function scanFile(file) {
   const imageBase64 = await toJpegBase64(file);
-  const res = await fetch("/scan/page", {
+  const res = await fetch(API_BASE + "/scan/page", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
     body: JSON.stringify({ imageBase64, mediaType: "image/jpeg" }),

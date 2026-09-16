@@ -26,12 +26,13 @@
 
 import * as offline from "./offline.js";
 import { captureTokenFromUrl, getToken } from "./auth.js";
+import { API_BASE } from "./config.js";
 
 async function api(path, options = {}) {
   const token = getToken();
   const method = options.method ?? "GET";
   try {
-    const res = await fetch(path, {
+    const res = await fetch(API_BASE + path, {
       ...options,
       headers: {
         "content-type": "application/json",
@@ -229,7 +230,7 @@ async function flushPendingReviews() {
     if (!token) return;
     let res;
     try {
-      res = await fetch("/sync/review", {
+      res = await fetch(API_BASE + "/sync/review", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify(review),

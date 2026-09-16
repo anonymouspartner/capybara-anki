@@ -209,6 +209,21 @@ The new app shares a Supabase project with the bot, so the bot's discipline appl
 Static hosting: Cloudflare Pages or Vercel. Free tier, HTTPS and service workers work
 out of the box. Supabase Storage can serve static files but it is the awkward path.
 
+**Status: done, on GitHub Pages, not the two options above.** The awkward path turned
+out to be an edge function (`app`), not Storage: `web/` was first deployed as its own
+Supabase Edge Function serving files read from disk, which worked for `.js`/`.css` but
+not `index.html` itself — Supabase silently rewrites any `text/html` edge-function
+response to `text/plain` (confirmed against a real deployed function and Supabase's
+own docs; not a bug, a stated platform limitation, since Edge Functions are designed
+for APIs, not serving pages). That function is deleted. `web/` is now published by
+`.github/workflows/pages.yml` to GitHub Pages instead — same free-tier/HTTPS/service-
+worker properties this section predicted, just a different provider than the two
+named. The one real consequence: `web/` and the Supabase project are now different
+origins, so every real API call is cross-origin — `supabase/functions/_shared/cors.ts`
+is what that required, applied to `sync`/`scan`/`pronounce` alike, and verified against
+the live project with a real cross-origin `curl` (preflight and real responses both
+carry `access-control-allow-origin`).
+
 ### 4.1 Why the scanner's Python dissolves
 
 `claude_parser.py` does four jobs. Three of them move:

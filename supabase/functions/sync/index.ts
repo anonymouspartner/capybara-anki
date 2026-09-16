@@ -4,13 +4,11 @@
  * `Deno.env.get`) deliberately, since D6 reuses that pattern rather than
  * inventing a second one.
  *
- * **Not deployed.** `PostgresStore` (`../_shared/postgresStore.ts`) is now real,
- * written against the live `anki_*` tables (docs/DESIGN.md §5, applied
- * 2026-09-16) rather than guessed — but deploying this function is still a
- * separate, undone step: Claude builds and commits; the maintainer deploys, and
- * only on an explicit, in-the-moment request (this repo's README, capybara-bot's
- * CLAUDE.md). This file exists so the real wiring is visible and reviewable now,
- * not so it ships today.
+ * **Deployed** (2026-09-16) against the live `anki_*` tables via `PostgresStore`
+ * (`../_shared/postgresStore.ts`) — verified live, not guessed. Every deploy,
+ * this one and each redeploy since, happened only on an explicit, in-the-moment
+ * request (this repo's README, capybara-bot's CLAUDE.md) — never a side effect
+ * of writing or committing code.
  *
  * Routes:
  *   GET    /sync/decks            → deck-list screen: every deck this user has
@@ -39,6 +37,11 @@
  * never hardcoded, never logged. `TIM_TOKEN`/`VIKA_TOKEN` name whose is whose;
  * `TIM_USER_ID`/`VIKA_USER_ID` are the `users.id` rows each resolves to. A request
  * with no matching token gets 401 before touching the store at all.
+ *
+ * CORS: `web/` is hosted on GitHub Pages, a different origin from this project
+ * — every real call is cross-origin, so every response (and the OPTIONS
+ * preflight browsers send ahead of one, since Authorization is never a
+ * "simple" header) needs CORS headers. See `../_shared/cors.ts`.
  */
 
 import {
@@ -54,6 +57,7 @@ import {
 import type { Store } from "../../../src/review/store.ts";
 import { resolveUserId } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
+import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 
 function getStore(): Store {
   const url = Deno.env.get("SUPABASE_URL");
@@ -71,7 +75,7 @@ function getStore(): Store {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CORS_HEADERS },
   });
 }
 
@@ -130,6 +134,9 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
 }
 
 Deno.serve(async (req) => {
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
+
   const userId = resolveUserId(req);
   if (!userId) return json({ error: "unauthorized" }, 401);
 
