@@ -1,13 +1,19 @@
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from migration.extract import NoteType, RawCard, RawNote, RawReview
 from migration.transform import (
     EXPECTED_FIELDS,
+    PRONUNCIATION_FIELDS,
+    card_kind_for,
     compute_elapsed_days,
+    latest_review_time,
     note_uuid,
+    resolve_vocab_deck,
     review_uuid,
+    strip_deck_prefix,
     transform_card_state,
     transform_note,
+    transform_pronunciation_note,
     transform_review,
 )
 
@@ -115,9 +121,11 @@ class TestTransformCardState:
         crt = 1_700_000_000  # a Tuesday-ish date, exact day doesn't matter
         card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=2, due=30, ivl=10,
                         reps=3, lapses=0, data={"s": 8.5, "d": 5.2})
-        state, warnings = transform_card_state(card, note_id="n1", user_id="tim",
-                                                 collection_created_at=crt)
         from datetime import datetime, timezone
+        state, warnings = transform_card_state(
+            card, note_id="n1", user_id="tim", collection_created_at=crt,
+            last_review=datetime.fromtimestamp(crt, tz=timezone.utc),
+        )
         expected = datetime.fromtimestamp(crt, tz=timezone.utc).date() + timedelta(days=30)
         assert state.due == expected
         assert state.stability == 8.5
@@ -193,3 +201,187 @@ class TestComputeElapsedDays:
         ]
         elapsed = compute_elapsed_days(reviews)
         assert elapsed[1_700_000_060_000] == 0
+
+
+def _pronunciation_note_type():
+    return NoteType(mid="pron-1", name="Capybara Pronunciation (shadowing)", field_names=PRONUNCIATION_FIELDS)
+
+
+def _raw_pronunciation_note(**overrides):
+    defaults = dict(
+        id=1, guid="pron-guid-aaa", mid="pron-1",
+        fields=["Доброго ранку", "[sound:x.mp3]", "Good morning", "uk-UA", "ранок", "src:1"],
+        tags=[],
+    )
+    defaults.update(overrides)
+    return RawNote(**defaults)
+
+
+class TestTransformPronunciationNote:
+    def test_recognized_pronunciation_note_transforms_cleanly(self):
+        """D18's field mapping (docs/DESIGN.md §8, supabase/functions/pronounce/
+        index.ts's own docstring): TargetText->lemma, Translation->lemma_translation,
+        Hint->gloss, audio never populated (media excluded from every export)."""
+        note, skip_reason = transform_pronunciation_note(_raw_pronunciation_note(), _pronunciation_note_type())
+        assert skip_reason is None
+        assert note.lemma == "Доброго ранку"
+        assert note.lemma_translation == "Good morning"
+        assert note.gloss == "ранок"
+        assert note.language == "uk"
+        assert note.audio_url is None
+        assert note.kind == "pronunciation"
+        assert note.has_spelling is False
+        assert note.deck == "Pronunciation"
+
+    def test_language_tag_is_normalized_to_its_primary_subtag(self):
+        note, skip_reason = transform_pronunciation_note(
+            _raw_pronunciation_note(fields=["x", "y", "z", "en-US", "h", "s"]), _pronunciation_note_type()
+        )
+        assert skip_reason is None
+        assert note.language == "en"
+
+    def test_empty_language_is_skipped_not_guessed(self):
+        """The real export's actual failure mode (2026-09-16): 13 notes with an
+        empty Language field and a garbled TargetText — stray test data, not real
+        pronunciation content, and not safe to default to a language."""
+        note, skip_reason = transform_pronunciation_note(
+            _raw_pronunciation_note(fields=["junk", "", "junk", "", "", ""]), _pronunciation_note_type()
+        )
+        assert note is None
+        assert "not a recognizable uk/en tag" in skip_reason
+
+    def test_unrecognized_language_tag_is_skipped(self):
+        note, skip_reason = transform_pronunciation_note(
+            _raw_pronunciation_note(fields=["x", "y", "z", "fr-FR", "h", "s"]), _pronunciation_note_type()
+        )
+        assert note is None
+        assert "not a recognizable uk/en tag" in skip_reason
+
+    def test_note_type_name_is_irrelevant_to_recognition(self):
+        """Same principle as transform_note: recognition is by field signature."""
+        differently_named = NoteType(mid="p2", name="Something else entirely", field_names=PRONUNCIATION_FIELDS)
+        note, skip_reason = transform_pronunciation_note(_raw_pronunciation_note(mid="p2"), differently_named)
+        assert skip_reason is None
+        assert note is not None
+
+    def test_vocab_fields_are_not_recognized_as_pronunciation(self):
+        vocab_type = NoteType(mid="v1", name="Capybara", field_names=EXPECTED_FIELDS)
+        note, skip_reason = transform_pronunciation_note(_raw_pronunciation_note(mid="v1"), vocab_type)
+        assert note is None
+        assert "fields don't match" in skip_reason
+
+
+class TestDeckResolution:
+    """D17, resolved against a real export 2026-09-16: a Capybara+ note's two real
+    Anki cards are told apart, and a note's own home deck is found, by where each
+    card is actually filed — see transform.py's module comment above
+    _SPELLING_DECK_NAME for why deck placement rather than template order."""
+
+    def test_strip_deck_prefix_removes_a_matching_prefix(self):
+        assert strip_deck_prefix("Capybara::Ukrainian", "Capybara::") == "Ukrainian"
+
+    def test_strip_deck_prefix_leaves_a_non_matching_name_alone(self):
+        """The real export's own edge case: 13 pronunciation notes filed straight
+        in the bare "Capybara" deck, no "::" at all."""
+        assert strip_deck_prefix("Capybara", "Capybara::") == "Capybara"
+
+    def test_card_kind_for_spelling_deck_is_spelling(self):
+        deck_names = {1: "Capybara::Ukrainian", 2: "Capybara::Spelling"}
+        recall_card = RawCard(id=1, note_id=1, deck_id=1, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        spelling_card = RawCard(id=2, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        assert card_kind_for(recall_card, deck_names, "Capybara::") == "recall"
+        assert card_kind_for(spelling_card, deck_names, "Capybara::") == "spelling"
+
+    def test_resolve_vocab_deck_for_a_single_card_note(self):
+        deck_names = {1: "Capybara::Grammar"}
+        card = RawCard(id=1, note_id=1, deck_id=1, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        deck, has_spelling = resolve_vocab_deck([card], deck_names, "Capybara::")
+        assert deck == "Grammar"
+        assert has_spelling is False
+
+    def test_resolve_vocab_deck_for_a_two_card_capybara_plus_note(self):
+        """The real pattern found on the export: one card in the note's home deck,
+        one in Spelling — has_spelling is true, and `deck` is the HOME deck, not
+        Spelling, regardless of which of the two cards sorts first."""
+        deck_names = {1: "Capybara::Ukrainian", 2: "Capybara::Spelling"}
+        spelling_card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        recall_card = RawCard(id=2, note_id=1, deck_id=1, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        deck, has_spelling = resolve_vocab_deck([spelling_card, recall_card], deck_names, "Capybara::")
+        assert deck == "Ukrainian"
+        assert has_spelling is True
+
+    def test_resolve_vocab_deck_falls_back_to_ukrainian_for_an_unresolvable_deck(self):
+        deck, has_spelling = resolve_vocab_deck([], {}, "Capybara::")
+        assert deck == "Ukrainian"
+        assert has_spelling is False
+
+
+class TestCardKindThreadedThroughCardStateAndReview:
+    def test_transform_card_state_records_its_card_kind(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        state, _ = transform_card_state(
+            card, note_id="n1", user_id="tim", collection_created_at=1_700_000_000, card_kind="spelling"
+        )
+        assert state.card_kind == "spelling"
+
+    def test_transform_card_state_defaults_to_recall(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        state, _ = transform_card_state(card, note_id="n1", user_id="tim", collection_created_at=1_700_000_000)
+        assert state.card_kind == "recall"
+
+    def test_transform_review_records_its_card_kind(self):
+        raw = RawReview(id=1_700_100_000_000, card_id=101, ease=3, ivl=10)
+        review = transform_review(raw, note_id="n1", user_id="tim", elapsed_days=1, card_kind="spelling")
+        assert review.card_kind == "spelling"
+
+
+class TestLatestReviewTime:
+    """CardState.last_review — not optional bookkeeping, see its docstring: without
+    it, the app's own FSRS resume logic (src/review/mutations.ts's toFsrsCardState)
+    treats a migrated card as brand new on its very next real review."""
+
+    def test_no_revlog_is_none(self):
+        assert latest_review_time([]) is None
+
+    def test_single_review_is_its_own_timestamp(self):
+        raw = RawReview(id=1_700_100_000_000, card_id=1, ease=3, ivl=10)
+        result = latest_review_time([raw])
+        assert result.timestamp() * 1000 == raw.id
+
+    def test_picks_the_most_recent_review_regardless_of_list_order(self):
+        earlier = RawReview(id=1_700_000_000_000, card_id=1, ease=2, ivl=1)
+        later = RawReview(id=1_700_100_000_000, card_id=1, ease=3, ivl=10)
+        assert latest_review_time([later, earlier]).timestamp() * 1000 == later.id
+
+    def test_result_is_timezone_aware_utc(self):
+        raw = RawReview(id=1_700_000_000_000, card_id=1, ease=3, ivl=1)
+        assert latest_review_time([raw]).tzinfo == timezone.utc
+
+    def test_transform_card_state_carries_last_review_through(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=2, due=10, ivl=5,
+                        reps=1, lapses=0, data={"s": 3.0, "d": 4.0})
+        revlog = [RawReview(id=1_700_100_000_000, card_id=1, ease=3, ivl=10)]
+        state, warnings = transform_card_state(
+            card, note_id="n1", user_id="tim", collection_created_at=1_700_000_000,
+            last_review=latest_review_time(revlog),
+        )
+        assert state.last_review is not None
+        assert not any("last_review" in w for w in warnings)
+
+    def test_non_new_card_with_no_revlog_warns(self):
+        """A card can only be non-new in Anki because it was reviewed at least
+        once — a missing revlog for one is worth flagging, not silently accepted."""
+        card = RawCard(id=1, note_id=1, deck_id=2, type=2, queue=2, due=10, ivl=5,
+                        reps=1, lapses=0, data={"s": 3.0, "d": 4.0})
+        state, warnings = transform_card_state(
+            card, note_id="n1", user_id="tim", collection_created_at=1_700_000_000, last_review=None
+        )
+        assert state.last_review is None
+        assert any("no revlog rows found" in w for w in warnings)
+
+    def test_new_card_with_no_revlog_does_not_warn(self):
+        card = RawCard(id=1, note_id=1, deck_id=2, type=0, queue=0, due=0, ivl=0, reps=0, lapses=0, data={})
+        _, warnings = transform_card_state(
+            card, note_id="n1", user_id="tim", collection_created_at=1_700_000_000, last_review=None
+        )
+        assert warnings == []

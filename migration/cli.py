@@ -22,19 +22,44 @@ from migration.config import extract_scheduler_config
 from migration.extract import (
     get_cards,
     get_collection_created_at,
+    get_deck_names,
     get_note_types,
     get_notes,
     get_revlog,
 )
 from migration.reader import UnreadableExportError, open_collection
 from migration.schema import MigrationResult
-from migration.transform import compute_elapsed_days, transform_card_state, transform_note, transform_review
+from migration.transform import (
+    PRONUNCIATION_FIELDS,
+    card_kind_for,
+    compute_elapsed_days,
+    latest_review_time,
+    resolve_vocab_deck,
+    transform_card_state,
+    transform_note,
+    transform_pronunciation_note,
+    transform_review,
+)
+
+
+def _dispatch_note(raw_note, note_type):
+    """Picks which of the two real Capybara note schemas (D17's vocab shape, D18's
+    pronunciation shape) this note actually is, by field signature — see
+    transform.py's EXPECTED_FIELDS/PRONUNCIATION_FIELDS comments for why signature,
+    not name. Anything that's neither falls through to transform_note, which already
+    produces a clear "fields don't match" (or "unknown note type") skip reason —
+    no need to duplicate that message here for a third case that isn't really
+    different from the first."""
+    if note_type is not None and note_type.field_names == PRONUNCIATION_FIELDS:
+        return transform_pronunciation_note(raw_note, note_type)
+    return transform_note(raw_note, note_type)
 
 
 def run_migration(export_path: Path, user_id: str, deck_prefix: str = "Capybara::") -> MigrationResult:
     with open_collection(export_path) as (col, collection_format):
         crt = get_collection_created_at(col)
         note_types = get_note_types(col)
+        deck_names = get_deck_names(col)
         raw_notes = get_notes(col)
         raw_cards = get_cards(col)
         raw_revlog = get_revlog(col)
@@ -47,14 +72,16 @@ def run_migration(export_path: Path, user_id: str, deck_prefix: str = "Capybara:
 
     notes = []
     note_id_by_anki_id: dict[int, str] = {}
+    note_by_anki_id: dict[int, object] = {}
     for raw_note in raw_notes:
-        note, skip_reason = transform_note(raw_note, note_types.get(raw_note.mid))
+        note, skip_reason = _dispatch_note(raw_note, note_types.get(raw_note.mid))
         if skip_reason:
             skipped_note_count += 1
             warnings.append(f"skipped: {skip_reason}")
             continue
         notes.append(note)
         note_id_by_anki_id[raw_note.id] = note.id
+        note_by_anki_id[raw_note.id] = note
 
     cards_by_note: dict[int, list] = defaultdict(list)
     for card in raw_cards:
@@ -68,26 +95,43 @@ def run_migration(export_path: Path, user_id: str, deck_prefix: str = "Capybara:
     card_states = []
     reviews = []
     for anki_note_id, cards in cards_by_note.items():
+        note = note_by_anki_id[anki_note_id]
         note_uuid = note_id_by_anki_id[anki_note_id]
         cards.sort(key=lambda c: c.id)
-        if len(cards) > 1:
+
+        # D17: a vocab note's own `deck`/`has_spelling` depend on how many real
+        # Anki cards it has and where they're filed — not knowable until cards_by_note
+        # exists, so transform_note/transform_pronunciation_note leave these at their
+        # schema defaults and this is where the real values land. Pronunciation notes
+        # already got the right values (deck="Pronunciation", has_spelling=False)
+        # from transform_pronunciation_note itself — every one of them is single-card
+        # in the real export (verified 2026-09-16), so nothing here needs to change
+        # for those, but the >2-cards check below still guards the assumption.
+        if note.kind == "vocab":
+            note.deck, note.has_spelling = resolve_vocab_deck(cards, deck_names, deck_prefix)
+
+        expected_card_count = 2 if note.has_spelling else 1
+        if len(cards) != expected_card_count:
             warnings.append(
-                f"note {anki_note_id}: has {len(cards)} cards, expected 1 (the "
-                "Capybara note type is single-card, §1.3). Using card "
-                f"{cards[0].id} for scheduling state; review history from all "
-                f"{len(cards)} cards is kept."
+                f"note {anki_note_id} ({note.kind}): has {len(cards)} card(s), "
+                f"expected {expected_card_count} — scheduling state and review "
+                "history are still recorded for every card found, per its own "
+                "deck-derived card_kind, but this note's shape doesn't match what "
+                "D17/D18 predict and is worth checking by hand."
             )
 
-        primary = cards[0]
-        card_state, cs_warnings = transform_card_state(primary, note_uuid, user_id, crt)
-        card_states.append(card_state)
-        warnings.extend(cs_warnings)
-
         for card in cards:
+            kind = card_kind_for(card, deck_names, deck_prefix)
             card_revlog = revlog_by_card.get(card.id, [])
+            card_state, cs_warnings = transform_card_state(
+                card, note_uuid, user_id, crt, card_kind=kind, last_review=latest_review_time(card_revlog)
+            )
+            card_states.append(card_state)
+            warnings.extend(cs_warnings)
+
             elapsed = compute_elapsed_days(card_revlog)
             for r in card_revlog:
-                reviews.append(transform_review(r, note_uuid, user_id, elapsed[r.id]))
+                reviews.append(transform_review(r, note_uuid, user_id, elapsed[r.id], card_kind=kind))
 
     warnings.extend(config_warnings)
 

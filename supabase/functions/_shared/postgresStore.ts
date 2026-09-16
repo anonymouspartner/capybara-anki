@@ -102,6 +102,10 @@ function schedulerConfigFromRow(row: Record<string, unknown>): SchedulerConfigRo
 export class PostgresStore implements Store {
   private client: SupabaseClient;
 
+  // PostgREST's own server-side max-rows cap on this project — see getDailyCounts'
+  // and getReviewsSince's own comments on the live bug this paging fixes.
+  private static readonly PAGE_SIZE = 1000;
+
   constructor(supabaseUrl: string, serviceRoleKey: string) {
     this.client = createClient(supabaseUrl, serviceRoleKey);
   }
@@ -188,14 +192,24 @@ export class PostgresStore implements Store {
     // notes for one account (2026-09-16). Embedding `anki_card_state` through its own
     // FK to `anki_notes.id` gets every candidate's state in the one query PostgREST
     // was always meant to answer this with, no id list of any size involved.
-    let noteQuery = this.client
-      .from("anki_notes")
-      .select("id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
-      .eq("language", language);
-    if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
-    const { data: notes, error } = await noteQuery;
-    if (error) throw new Error(`getDueCandidates: ${error.message}`);
-    if (!notes) return [];
+    // Paged via PAGE_SIZE too — a single language's note count is already 838 for
+    // the account this was migrated for (2026-09-16), close enough to PostgREST's
+    // own 1000-row cap on this project (see getReviewsSince/getDailyCounts' own
+    // comments on that exact cap silently truncating a live account) that leaving
+    // this unbounded would just be waiting for the same bug to recur.
+    const notes: Record<string, unknown>[] = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      let noteQuery = this.client
+        .from("anki_notes")
+        .select("id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
+        .eq("language", language)
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
+      const { data, error } = await noteQuery;
+      if (error) throw new Error(`getDueCandidates: ${error.message}`);
+      notes.push(...(data ?? []));
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
 
     const candidates: DueCandidate[] = [];
     for (const note of notes) {
@@ -228,12 +242,26 @@ export class PostgresStore implements Store {
     // null` captures, since that's precisely when no `card_state` row existed yet.
     // Ordering the user's whole history once and tracking what's been seen so far
     // reconstructs that without adding a column this schema doesn't have.
-    const { data: reviews, error } = await this.client
-      .from("anki_reviews")
-      .select("note_id, card_kind, reviewed_at")
-      .eq("user_id", userId)
-      .order("reviewed_at", { ascending: true });
-    if (error) throw new Error(`getDailyCounts: ${error.message}`);
+    //
+    // Paged via PAGE_SIZE, not one unbounded select — found live (2026-09-16),
+    // migrating a real ~3,800-review collection: PostgREST caps an unbounded
+    // select at its own server-side max-rows (1000 on this project) regardless of
+    // ORDER BY, so a single select silently returned only the OLDEST 1000 rows —
+    // missing every recent review, which is exactly backwards for "how many has
+    // this user already done today." See getReviewsSince's own comment on the
+    // same bug, hit by the same migration on the same day.
+    const reviews: Array<{ note_id: string; card_kind: string; reviewed_at: string }> = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_reviews")
+        .select("note_id, card_kind, reviewed_at")
+        .eq("user_id", userId)
+        .order("reviewed_at", { ascending: true })
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getDailyCounts: ${error.message}`);
+      reviews.push(...(data ?? []));
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
 
     let deckNoteIds: Set<string> | null = null;
     if (deck !== undefined) {
@@ -258,27 +286,47 @@ export class PostgresStore implements Store {
   }
 
   async getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]> {
-    const { data, error } = await this.client
-      .from("anki_reviews")
-      .select("*")
-      .eq("user_id", userId)
-      .gte("reviewed_at", since.toISOString())
-      .order("reviewed_at", { ascending: true });
-    if (error) throw new Error(`getReviewsSince: ${error.message}`);
-    return (data ?? []).map(reviewFromRow);
+    // Paged via PAGE_SIZE, not one unbounded select — found live (2026-09-16),
+    // migrating a real ~3,800-review collection into this table: an unbounded
+    // select silently returns only PostgREST's own server-side max-rows cap
+    // (1000 on this project), ordered ascending — the OLDEST 1000 rows, not the
+    // most recent — so the stats screen's totalReviews/successRate/streak all
+    // quietly undercounted a real account the moment its history crossed that
+    // cap. `getDailyCounts` had the identical bug, same day, same fix shape.
+    const rows: Record<string, unknown>[] = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_reviews")
+        .select("*")
+        .eq("user_id", userId)
+        .gte("reviewed_at", since.toISOString())
+        .order("reviewed_at", { ascending: true })
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getReviewsSince: ${error.message}`);
+      rows.push(...(data ?? []));
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
+    return rows.map(reviewFromRow);
   }
 
   async getCardStateCounts(userId: string): Promise<StateCounts> {
     const language = await this.learningLanguage(userId);
     // Same fix, same reason, as getDueCandidates above: embed anki_card_state through
     // its FK rather than fetching note ids and re-querying with `.in(noteIds)`, which
-    // breaks outright once a real account has a few hundred notes.
-    const { data: notes, error } = await this.client
-      .from("anki_notes")
-      .select("id, has_spelling, anki_card_state(card_kind, state, suspended)")
-      .eq("language", language);
-    if (error) throw new Error(`getCardStateCounts: ${error.message}`);
-    if (!notes || notes.length === 0) {
+    // breaks outright once a real account has a few hundred notes. Paged via
+    // PAGE_SIZE for the same reason getDueCandidates is, just below.
+    const notes: Record<string, unknown>[] = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_notes")
+        .select("id, has_spelling, anki_card_state(card_kind, state, suspended)")
+        .eq("language", language)
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getCardStateCounts: ${error.message}`);
+      notes.push(...(data ?? []));
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
+    if (notes.length === 0) {
       return { newCount: 0, learningCount: 0, reviewCount: 0, suspendedCount: 0 };
     }
 
