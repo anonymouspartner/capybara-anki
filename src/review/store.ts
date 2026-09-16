@@ -8,6 +8,7 @@
  */
 
 import type {
+  CardKind,
   CardStateRow,
   DailyCounts,
   DueCandidate,
@@ -20,7 +21,9 @@ import type {
 
 export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
-  getCardState(noteId: string): Promise<CardStateRow | null>;
+  /** D17: a card is `(noteId, cardKind)`, not `noteId` alone — every caller already
+   * knows which of a note's (one or two) cards it means before asking. */
+  getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
   /** Inserts a note from an ingestion path (`/scan` today) and returns its
    * generated id. No review step (D10) — the row is immediately reviewable. */
@@ -28,9 +31,11 @@ export interface Store {
   /** Every deck name with at least one note this user can review — the deck-list
    * screen's row set. */
   getDecks(userId: string): Promise<string[]>;
-  /** Every note this user's due queue could possibly include, optionally narrowed
-   * to one deck (undefined = every deck combined). Deck/language scoping happens
-   * here, not in dueQueue.ts, which only knows scheduling. */
+  /** Every card this user's due queue could possibly include, optionally narrowed
+   * to one deck (undefined = every deck combined) — one entry per note, plus a
+   * second `cardKind: 'spelling'` entry for each note with `hasSpelling` (D17).
+   * Deck/language scoping happens here, not in dueQueue.ts, which only knows
+   * scheduling. */
   getDueCandidates(userId: string, deck?: string): Promise<DueCandidate[]>;
   /** Daily new/review counts so far, scoped the same way as `getDueCandidates` —
    * each deck gets its own daily allowance against the one shared
@@ -58,8 +63,16 @@ export interface Store {
  * is a no-op (the idempotency §4.2 promises), and `getDailyCounts` actually derives
  * its answer from inserted reviews rather than being told the answer.
  */
+/** `card_state`'s real key, D17: a `(noteId, cardKind)` pair, not `noteId` alone.
+ * Exported so anything seeding `InMemoryStore.cardStates` directly (tests, the demo
+ * server) uses the same format rather than hardcoding it. */
+export function cardKey(noteId: string, cardKind: CardKind): string {
+  return `${noteId}:${cardKind}`;
+}
+
 export class InMemoryStore implements Store {
   notes = new Map<string, NoteRow>();
+  /** Keyed by `cardKey(noteId, cardKind)` — see that function's docstring. */
   cardStates = new Map<string, CardStateRow>();
   schedulerConfigs = new Map<string, SchedulerConfigRow>();
   reviews = new Map<string, ReviewRow>();
@@ -72,8 +85,8 @@ export class InMemoryStore implements Store {
     return Promise.resolve(this.notes.get(noteId) ?? null);
   }
 
-  getCardState(noteId: string): Promise<CardStateRow | null> {
-    return Promise.resolve(this.cardStates.get(noteId) ?? null);
+  getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null> {
+    return Promise.resolve(this.cardStates.get(cardKey(noteId, cardKind)) ?? null);
   }
 
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow> {
@@ -103,13 +116,17 @@ export class InMemoryStore implements Store {
     const candidates: DueCandidate[] = [];
     for (const note of this.notes.values()) {
       if (deck !== undefined && note.deck !== deck) continue;
-      const state = this.cardStates.get(note.id);
-      candidates.push({
-        noteId: note.id,
-        due: state?.due ?? null,
-        state: state?.state ?? null,
-        suspended: state?.suspended ?? false,
-      });
+      const cardKinds: CardKind[] = note.hasSpelling ? ["recall", "spelling"] : ["recall"];
+      for (const cardKind of cardKinds) {
+        const state = this.cardStates.get(cardKey(note.id, cardKind));
+        candidates.push({
+          noteId: note.id,
+          cardKind,
+          due: state?.due ?? null,
+          state: state?.state ?? null,
+          suspended: state?.suspended ?? false,
+        });
+      }
     }
     return Promise.resolve(candidates);
   }
@@ -141,27 +158,32 @@ export class InMemoryStore implements Store {
   getCardStateCounts(_userId: string): Promise<StateCounts> {
     // Same "doesn't model per-user access" caveat as getDecks — every note in the
     // fixture counts, since tests construct exactly the set they want counted.
+    // A note with hasSpelling contributes two cards, same as getDueCandidates —
+    // its recall and spelling cards are two separate things to learn.
     let newCount = 0, learningCount = 0, reviewCount = 0, suspendedCount = 0;
     for (const note of this.notes.values()) {
-      const state = this.cardStates.get(note.id);
-      if (state?.suspended) suspendedCount++;
-      if (state?.state === 1 || state?.state === 3) learningCount++;
-      else if (state?.state === 2) reviewCount++;
-      else newCount++;
+      const cardKinds: CardKind[] = note.hasSpelling ? ["recall", "spelling"] : ["recall"];
+      for (const cardKind of cardKinds) {
+        const state = this.cardStates.get(cardKey(note.id, cardKind));
+        if (state?.suspended) suspendedCount++;
+        if (state?.state === 1 || state?.state === 3) learningCount++;
+        else if (state?.state === 2) reviewCount++;
+        else newCount++;
+      }
     }
     return Promise.resolve({ newCount, learningCount, reviewCount, suspendedCount });
   }
 
   insertReview(row: ReviewRow): Promise<void> {
     if (this.reviews.has(row.id)) return Promise.resolve(); // idempotent, per §4.2
-    const priorState = this.cardStates.get(row.noteId)?.state ?? null;
+    const priorState = this.cardStates.get(cardKey(row.noteId, row.cardKind))?.state ?? null;
     this.reviewStateAtSubmission.set(row.id, priorState);
     this.reviews.set(row.id, row);
     return Promise.resolve();
   }
 
   upsertCardState(row: CardStateRow): Promise<void> {
-    this.cardStates.set(row.noteId, row);
+    this.cardStates.set(cardKey(row.noteId, row.cardKind), row);
     return Promise.resolve();
   }
 
@@ -174,7 +196,9 @@ export class InMemoryStore implements Store {
 
   deleteNote(noteId: string): Promise<void> {
     this.notes.delete(noteId);
-    this.cardStates.delete(noteId);
+    for (const key of [cardKey(noteId, "recall"), cardKey(noteId, "spelling")]) {
+      this.cardStates.delete(key);
+    }
     for (const [id, review] of this.reviews) {
       if (review.noteId === noteId) this.reviews.delete(id);
     }

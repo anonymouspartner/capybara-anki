@@ -27,6 +27,8 @@ function seedNote(store: InMemoryStore, id: string, overrides: Partial<NoteRow> 
     exampleTranslation: null,
     audioUrl: null,
     deck: "Ukrainian",
+    kind: "vocab",
+    hasSpelling: false,
     ...overrides,
   });
 }
@@ -44,13 +46,20 @@ function seedConfig(store: InMemoryStore, userId: string, overrides: Partial<Sch
   });
 }
 
+/** Most tests only care about which notes came back — `cardKind` gets its own
+ * dedicated D17 tests below. */
+function noteIds(items: { noteId: string }[]): string[] {
+  return items.map((i) => i.noteId);
+}
+
 Deno.test("getDueQueue: a freshly seeded note with no reviews shows up as due", async () => {
   const store = new InMemoryStore();
   seedNote(store, "n1");
   seedConfig(store, "tim");
 
   const queue = await getDueQueue(store, "tim", NOW);
-  assertEquals(queue, ["n1"]);
+  assertEquals(noteIds(queue), ["n1"]);
+  assertEquals(queue[0].cardKind, "recall");
 });
 
 Deno.test("getDueQueue: respects the daily new limit end to end", async () => {
@@ -68,7 +77,14 @@ Deno.test("submitReview then getDueQueue: an answered card with a future due dat
   seedNote(store, "n1");
   seedConfig(store, "tim");
 
-  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
 
   const queue = await getDueQueue(store, "tim", NOW);
   assertEquals(queue, []); // its new due date is in the future relative to NOW
@@ -79,8 +95,9 @@ Deno.test("submitReview twice with the same reviewId is idempotent", async () =>
   seedNote(store, "n1");
   seedConfig(store, "tim");
 
-  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
-  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
+  const input = { reviewId: "r1", noteId: "n1", cardKind: "recall" as const, userId: "tim", rating: 3 as const, reviewedAt: NOW };
+  await submitReview(store, input);
+  await submitReview(store, input);
 
   assertEquals(store.reviews.size, 1);
 });
@@ -90,7 +107,7 @@ Deno.test("setSuspended then getDueQueue: a suspended note never appears", async
   seedNote(store, "n1");
   seedConfig(store, "tim");
 
-  await setSuspended(store, "n1", true);
+  await setSuspended(store, "n1", "recall", true);
 
   const queue = await getDueQueue(store, "tim", NOW);
   assertEquals(queue, []);
@@ -123,12 +140,19 @@ Deno.test("deleteNote: removes the note, its card_state, and its reviews", async
   const store = new InMemoryStore();
   seedNote(store, "n1");
   seedConfig(store, "tim");
-  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
 
   await deleteNote(store, "n1");
 
   assertEquals(await store.getNote("n1"), null);
-  assertEquals(await store.getCardState("n1"), null);
+  assertEquals(await store.getCardState("n1", "recall"), null);
   assertEquals(store.reviews.size, 0);
 });
 
@@ -144,7 +168,7 @@ Deno.test("getDueQueue: scoping to one deck excludes notes in other decks", asyn
   seedConfig(store, "tim");
 
   const ukrainianQueue = await getDueQueue(store, "tim", NOW, "Ukrainian");
-  assertEquals(ukrainianQueue, ["uk-1"]);
+  assertEquals(noteIds(ukrainianQueue), ["uk-1"]);
 });
 
 Deno.test("getDueQueue: no deck argument combines every deck", async () => {
@@ -154,7 +178,49 @@ Deno.test("getDueQueue: no deck argument combines every deck", async () => {
   seedConfig(store, "tim");
 
   const combined = await getDueQueue(store, "tim", NOW);
-  assertEquals(new Set(combined), new Set(["uk-1", "en-1"]));
+  assertEquals(new Set(noteIds(combined)), new Set(["uk-1", "en-1"]));
+});
+
+Deno.test("D17: a hasSpelling note offers both a recall and a spelling due item", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  const queue = await getDueQueue(store, "tim", NOW);
+  assertEquals(queue.length, 2);
+  assertEquals(new Set(queue.map((i) => i.cardKind)), new Set(["recall", "spelling"]));
+});
+
+Deno.test("D17: reviewing a note's spelling card doesn't affect its recall card's schedule", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "spelling",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+
+  const queue = await getDueQueue(store, "tim", NOW);
+  // Spelling was just answered (due in the future); recall is untouched and still new/due.
+  assertEquals(queue.length, 1);
+  assertEquals(queue[0].cardKind, "recall");
+});
+
+Deno.test("D17: suspending a note's spelling card leaves its recall card reviewable", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  await setSuspended(store, "n1", "spelling", true);
+
+  const queue = await getDueQueue(store, "tim", NOW);
+  assertEquals(queue.length, 1);
+  assertEquals(queue[0].cardKind, "recall");
 });
 
 Deno.test("getDeckSummaries: one row per deck, counts matching what getDueQueue would offer", async () => {
@@ -177,7 +243,14 @@ Deno.test("getDeckSummaries: a deck's daily new limit is independent of another 
   seedNote(store, "en-1", { deck: "English" });
   seedConfig(store, "tim", { dailyNewLimit: 1 });
   // Use up Ukrainian's allowance only.
-  await submitReview(store, { reviewId: "r1", noteId: "uk-1", userId: "tim", rating: 3, reviewedAt: NOW });
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "uk-1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
 
   const summaries = await getDeckSummaries(store, "tim", NOW);
   const byDeck = Object.fromEntries(summaries.map((s) => [s.deck, s]));
@@ -195,6 +268,7 @@ Deno.test("getDueQueueWithPreviews: attaches note content and a four-rating prev
   assertEquals(cards.length, 1);
   assertEquals(cards[0].lemma, "важкий");
   assertEquals(cards[0].gloss, "hard");
+  assertEquals(cards[0].cardKind, "recall");
   // Again <= Hard <= Good <= Easy, same invariant mutations.test.ts checks directly.
   const { again, hard, good, easy } = cards[0].preview;
   if (!(again.getTime() <= hard.getTime())) throw new Error("Again should not outlast Hard");
@@ -212,12 +286,30 @@ Deno.test("getDueQueueWithPreviews: respects deck scoping like getDueQueue", asy
   assertEquals(cards.map((c) => c.id), ["uk-1"]);
 });
 
+Deno.test("getDueQueueWithPreviews: a hasSpelling note's two cards each get their own preview", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  const cards = await getDueQueueWithPreviews(store, "tim", NOW);
+  assertEquals(cards.length, 2);
+  assertEquals(cards.every((c) => c.id === "n1"), true);
+  assertEquals(new Set(cards.map((c) => c.cardKind)), new Set(["recall", "spelling"]));
+});
+
 Deno.test("getStats: reflects reviews actually submitted through submitReview, end to end", async () => {
   const store = new InMemoryStore();
   seedNote(store, "n1");
   seedConfig(store, "tim");
 
-  await submitReview(store, { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: NOW });
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
 
   const stats = await getStats(store, "tim", NOW);
   assertEquals(stats.totalReviews, 1);
@@ -237,4 +329,13 @@ Deno.test("getStats: cardCounts covers every note regardless of review history",
   assertEquals(stats.cardCounts.newCount, 2);
   assertEquals(stats.totalReviews, 0);
   assertEquals(stats.successRate, null);
+});
+
+Deno.test("getStats: a hasSpelling note's two cards both count toward cardCounts", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  const stats = await getStats(store, "tim", NOW);
+  assertEquals(stats.cardCounts.newCount, 2); // recall + spelling, both new
 });

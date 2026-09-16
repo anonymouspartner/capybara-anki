@@ -51,6 +51,11 @@ export async function importExtractedCards(
       exampleTranslation: card.exampleTranslation,
       audioUrl: null,
       deck: opts.deck,
+      // The scanner only ever produces plain vocabulary notes — a scanned photo
+      // has no way to know a note should get a second Spelling card (D17), and
+      // Pronunciation notes (D18) come from a different pipeline entirely.
+      kind: "vocab",
+      hasSpelling: false,
       source: opts.source,
     };
 

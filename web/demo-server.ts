@@ -25,10 +25,11 @@ import {
   setSuspended,
   submitReview,
 } from "../src/review/handlers.ts";
-import { InMemoryStore } from "../src/review/store.ts";
+import { cardKey, InMemoryStore } from "../src/review/store.ts";
 import type { CardStateRow, NoteRow } from "../src/review/types.ts";
 import { importExtractedCards } from "../src/scan/import.ts";
 import type { ExtractedCard } from "../src/scan/types.ts";
+import { scoreAttempt } from "../src/pronunciation/score.ts";
 
 const DEMO_TOKEN = "demo-token";
 const DEMO_USER = "demo-user";
@@ -45,32 +46,58 @@ store.schedulerConfigs.set(DEMO_USER, {
 });
 
 // Placeholder vocabulary only — never real corpus content. Chosen to exercise the
-// UI's actual field set (and, here, two decks) — not to mean anything.
+// UI's actual field set (four decks, D17's spelling card, D18's pronunciation
+// note) — not to mean anything.
 const demoNotes: NoteRow[] = [
   {
     id: "demo-1", lemma: "приклад", gloss: "example", lemmaTranslation: "example",
     partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
     example: "Це приклад речення.", exampleTranslation: "This is an example sentence.",
-    audioUrl: null,
+    audioUrl: null, kind: "vocab", hasSpelling: false,
   },
   {
     id: "demo-2", lemma: "капібара", gloss: "capybara", lemmaTranslation: "capybara",
     partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
     example: "Капібара — найбільший гризун у світі.",
     exampleTranslation: "The capybara is the world's largest rodent.",
-    audioUrl: null,
+    audioUrl: null, kind: "vocab", hasSpelling: false,
   },
   {
     id: "demo-3", lemma: "again", gloss: "one more time", lemmaTranslation: "знову",
     partOfSpeech: "adv", language: "uk", deck: "Ukrainian",
     example: "Спробуй ще раз.", exampleTranslation: "Try again.",
-    audioUrl: null,
+    audioUrl: null, kind: "vocab", hasSpelling: false,
   },
   {
     id: "demo-4", lemma: "hard", gloss: "difficult", lemmaTranslation: "важкий",
     partOfSpeech: "adj", language: "en", deck: "English",
     example: "That was a hard question.", exampleTranslation: "Це було важке питання.",
-    audioUrl: null,
+    audioUrl: null, kind: "vocab", hasSpelling: false,
+  },
+  // D17: a Capybara+-like note — real Anki data confirms notes like this produce
+  // two independently-scheduled cards. hasSpelling gives it a second due item
+  // without a second row in `notes`.
+  {
+    id: "demo-5", lemma: "письменниця", gloss: "female writer", lemmaTranslation: "writer",
+    partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
+    example: "Вона відома письменниця.", exampleTranslation: "She is a famous writer.",
+    audioUrl: null, kind: "vocab", hasSpelling: true,
+  },
+  // D17: plain vocabulary notes filed under Grammar need nothing special —
+  // confirmed against a real export to share this exact schema.
+  {
+    id: "demo-6", lemma: "б", gloss: "conditional particle", lemmaTranslation: "would",
+    partOfSpeech: "particle", language: "uk", deck: "Grammar",
+    example: "Я б пішов.", exampleTranslation: "I would go.",
+    audioUrl: null, kind: "vocab", hasSpelling: false,
+  },
+  // D18: a pronunciation note — same columns, reused: lemma<-TargetText,
+  // lemmaTranslation<-Translation, gloss<-Hint, audioUrl<-ReferenceAudio.
+  {
+    id: "demo-7", lemma: "Доброго ранку", gloss: "a morning greeting", lemmaTranslation: "Good morning",
+    partOfSpeech: null, language: "uk", deck: "Pronunciation",
+    example: null, exampleTranslation: null,
+    audioUrl: null, kind: "pronunciation", hasSpelling: false,
   },
 ];
 for (const note of demoNotes) store.notes.set(note.id, note);
@@ -78,11 +105,11 @@ for (const note of demoNotes) store.notes.set(note.id, note);
 // One already-reviewed, currently-due card, so the deck list and review flow both
 // have more than "all new" to show.
 const dueYesterday: CardStateRow = {
-  noteId: "demo-3", due: new Date(Date.now() - 86_400_000), stability: 4.2,
+  noteId: "demo-3", cardKind: "recall", due: new Date(Date.now() - 86_400_000), stability: 4.2,
   difficulty: 5.6, state: 2, reps: 2, lapses: 0,
   lastReview: new Date(Date.now() - 5 * 86_400_000), suspended: false, lastUserId: DEMO_USER,
 };
-store.cardStates.set("demo-3", dueYesterday);
+store.cardStates.set(cardKey("demo-3", "recall"), dueYesterday);
 
 // A handful of backdated reviews purely for the stats screen demo (step 6) — never
 // real study history, just enough days of activity that the histogram/streak/
@@ -94,6 +121,7 @@ for (let i = 0; i < 6; i++) {
   store.reviews.set(`demo-review-${i}`, {
     id: `demo-review-${i}`,
     noteId: "demo-3",
+    cardKind: "recall",
     userId: DEMO_USER,
     rating: i === 2 ? 1 : 3, // one Again in the middle, Good otherwise
     reviewedAt: new Date(Date.now() - i * DAY_MS),
@@ -129,7 +157,8 @@ Deno.serve({ port: 8787 }, async (req) => {
   // "/scan/" (trailing slash), not a bare "/scan" prefix — "/scan.html"/"/scan.js"
   // are static files this same check would otherwise wrongly route into the
   // auth-gated API branch below (caught by curling them directly, not by eye).
-  if (!url.pathname.startsWith("/sync/") && !url.pathname.startsWith("/scan/")) {
+  const apiPrefixes = ["/sync/", "/scan/", "/pronounce/"];
+  if (!apiPrefixes.some((p) => url.pathname.startsWith(p))) {
     return serveStatic(url.pathname);
   }
 
@@ -163,6 +192,20 @@ Deno.serve({ port: 8787 }, async (req) => {
     return json(result);
   }
 
+  if (req.method === "POST" && url.pathname === "/pronounce/score") {
+    const body = await req.json();
+    if (!body.noteId || !body.audioBase64 || !body.mediaType) {
+      return json({ error: "noteId, audioBase64 and mediaType are required" }, 400);
+    }
+    const note = await store.getNote(body.noteId);
+    if (!note) return json({ error: "note not found" }, 404);
+    // No real Whisper call in the demo (transcribeAudio is unit-tested separately
+    // against a fake client in src/pronunciation/transcribe.test.ts) — scoreAttempt
+    // itself is real, just fed a canned "perfect" transcript so the record → score
+    // → continue flow is verifiable without a microphone or an API key.
+    return json(scoreAttempt(note.lemma, note.lemma));
+  }
+
   if (req.method === "GET" && url.pathname === "/sync/decks") {
     return json(await getDeckSummaries(store, DEMO_USER, new Date()));
   }
@@ -178,14 +221,14 @@ Deno.serve({ port: 8787 }, async (req) => {
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();
     await submitReview(store, {
-      reviewId: body.reviewId, noteId: body.noteId, userId: DEMO_USER,
+      reviewId: body.reviewId, noteId: body.noteId, cardKind: body.cardKind ?? "recall", userId: DEMO_USER,
       rating: body.rating, reviewedAt: new Date(body.reviewedAt),
     });
     return json({ ok: true });
   }
   if (req.method === "POST" && url.pathname === "/sync/suspend") {
     const body = await req.json();
-    await setSuspended(store, body.noteId, body.suspended);
+    await setSuspended(store, body.noteId, body.cardKind ?? "recall", body.suspended);
     return json({ ok: true });
   }
   if (req.method === "PATCH" && noteId) {

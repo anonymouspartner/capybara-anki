@@ -20,8 +20,10 @@
  *                                    the order; getDueQueueWithPreviews fetches what
  *                                    the reviewer needs to render each card without
  *                                    a second request)
- *   POST   /sync/review           → { reviewId, noteId, rating, reviewedAt }
- *   POST   /sync/suspend          → { noteId, suspended }
+ *   POST   /sync/review           → { reviewId, noteId, cardKind?, rating, reviewedAt }
+ *                                    (cardKind defaults to 'recall' — D17's
+ *                                    'spelling' only exists for hasSpelling notes)
+ *   POST   /sync/suspend          → { noteId, cardKind?, suspended }
  *   PATCH  /sync/note/:id         → a partial NoteRow
  *   DELETE /sync/note/:id
  *   GET    /sync/stats?days=N     → stats screen (step 6): a day-by-day activity
@@ -76,7 +78,7 @@ class PostgresStore implements Store {
   getNote(_noteId: string): ReturnType<Store["getNote"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
-  getCardState(_noteId: string): ReturnType<Store["getCardState"]> {
+  getCardState(_noteId: string, _cardKind: Parameters<Store["getCardState"]>[1]): ReturnType<Store["getCardState"]> {
     throw new Error("PostgresStore is not implemented yet — see this class's docstring");
   }
   getSchedulerConfig(_userId: string): ReturnType<Store["getSchedulerConfig"]> {
@@ -161,6 +163,9 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
     await submitReview(store, {
       reviewId: body.reviewId,
       noteId: body.noteId,
+      // D17: defaults to 'recall' — every note without hasSpelling only ever has
+      // one card, so most clients never need to say which one they mean.
+      cardKind: body.cardKind ?? "recall",
       userId,
       rating: body.rating,
       reviewedAt: new Date(body.reviewedAt),
@@ -170,7 +175,7 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
 
   if (req.method === "POST" && url.pathname === "/sync/suspend") {
     const body = await req.json();
-    await setSuspended(store, body.noteId, body.suspended);
+    await setSuspended(store, body.noteId, body.cardKind ?? "recall", body.suspended);
     return json({ ok: true });
   }
 

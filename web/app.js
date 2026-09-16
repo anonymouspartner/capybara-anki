@@ -5,13 +5,14 @@
 // step: every scheduling decision lives server-side (src/review/), so this file's
 // job is fetch → render → post an answer → next card.
 //
-// Only two decks are reviewable here (Ukrainian, English) — real AnkiDroid's deck
-// list also has Grammar, Spelling, and Pronunciation, but those last two are
-// genuinely different card shapes (a fill-in-blank and an audio+mic card, not the
-// Capybara vocabulary note this reviewer knows how to render — see docs/DESIGN.md
-// §7.5 finding 5 and §11) and Grammar depends on whether its real notes share the
-// vocabulary schema, which nothing here has confirmed yet. Showing empty rows for
-// decks this app can't actually review would be worse than not showing them.
+// Every deck a note actually exists in shows up here — there's no hardcoded deck
+// list. Grammar is just vocabulary notes in a differently-named deck (confirmed
+// against a real export, docs/DESIGN.md D17/§11 item 4) and needs nothing special.
+// Pronunciation notes (D18) share the same `notes` row shape too, just with
+// `kind: "pronunciation"` and a different reveal-and-rate UI (renderReview()
+// branches on it below) — recording and scoring an attempt instead of a
+// self-graded four-button tap. Spelling (D17's `card_kind`) surfaces as a second
+// due item alongside a `Capybara+` note's normal recall card, not a separate deck.
 //
 // Auth (D13, §4.5): install is opening one link, `#t=<token>`. `auth.js` (shared
 // with scan.js) reads the fragment, stores the token, and strips it from the
@@ -79,6 +80,9 @@ const state = {
   revealed: false,
   editing: false,
   sessionCount: 0,
+  // D18 (pronunciation notes): "idle" | "recording" | "scoring" | "scored".
+  recording: "idle",
+  pronunciationResult: null, // { transcript, similarity, bucket, rating } | { error } | null
 };
 
 /** Formats a due date as AnkiDroid's own short interval label ("<1m", "10m", "4d",
@@ -254,8 +258,14 @@ function renderReview() {
     return;
   }
 
+  if (note.kind === "pronunciation") {
+    renderPronunciationReview(note);
+    return;
+  }
+
   contentEl.innerHTML = `
     <div id="card">
+      ${note.cardKind === "spelling" ? `<div class="card-kind-badge">Spelling</div>` : ""}
       <div id="lemma">${escapeHtml(note.lemma)}</div>
       <div id="back" class="${state.revealed ? "visible" : ""}">
         <hr class="divider" />
@@ -359,6 +369,7 @@ async function submitRating(rating) {
     body: JSON.stringify({
       reviewId: crypto.randomUUID(),
       noteId: note.id,
+      cardKind: note.cardKind,
       rating,
       reviewedAt: new Date().toISOString(),
     }),
@@ -370,7 +381,10 @@ async function submitRating(rating) {
 
 async function suspendCurrent() {
   const note = currentNote();
-  await api("/sync/suspend", { method: "POST", body: JSON.stringify({ noteId: note.id, suspended: true }) });
+  await api("/sync/suspend", {
+    method: "POST",
+    body: JSON.stringify({ noteId: note.id, cardKind: note.cardKind, suspended: true }),
+  });
   advance();
 }
 
@@ -385,7 +399,141 @@ function advance() {
   state.queue.splice(state.index, 1);
   state.revealed = false;
   state.editing = false;
+  state.recording = "idle";
+  state.pronunciationResult = null;
   renderReview();
+}
+
+// ---------------------------------------------------------------------------
+// Pronunciation (D18) — record an attempt, score it via /pronounce/score,
+// submit the resulting rating through the exact same /sync/review submitRating()
+// every other card uses. No separate scheduling path for pronunciation notes —
+// only a different way of arriving at a rating.
+// ---------------------------------------------------------------------------
+
+let mediaRecorder = null;
+let recordedChunks = [];
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(",") + 1));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function startRecording() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    console.error(e);
+    state.pronunciationResult = { error: "Microphone access was denied or unavailable." };
+    renderReview();
+    return;
+  }
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  });
+  mediaRecorder.start();
+  state.recording = "recording";
+  state.pronunciationResult = null;
+  renderReview();
+}
+
+function stopRecording() {
+  return new Promise((resolve) => {
+    mediaRecorder.addEventListener("stop", () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+      resolve(blob);
+    }, { once: true });
+    mediaRecorder.stop();
+  });
+}
+
+async function stopAndScore() {
+  const blob = await stopRecording();
+  state.recording = "scoring";
+  renderReview();
+
+  try {
+    const audioBase64 = await blobToBase64(blob);
+    const result = await api("/pronounce/score", {
+      method: "POST",
+      body: JSON.stringify({
+        noteId: currentNote().id,
+        audioBase64,
+        mediaType: blob.type || "audio/webm",
+      }),
+    });
+    state.pronunciationResult = result;
+    state.recording = "scored";
+  } catch (e) {
+    console.error(e);
+    state.pronunciationResult = { error: e.message ?? "Scoring failed. Try again." };
+    state.recording = "idle";
+  }
+  renderReview();
+}
+
+/** The rating a scored attempt produced goes through submitRating() unchanged —
+ * pronunciation notes only ever have a 'recall' card (never hasSpelling), so
+ * currentNote().cardKind is always right for the /sync/review call it makes. */
+async function continueAfterScore() {
+  const rating = state.pronunciationResult.rating;
+  await submitRating(rating);
+}
+
+function renderPronunciationReview(note) {
+  const result = state.pronunciationResult;
+  contentEl.innerHTML = `
+    <div id="card">
+      <div id="lemma">${escapeHtml(note.lemma)}</div>
+      <div class="translation">${escapeHtml(note.lemmaTranslation)}</div>
+      ${note.gloss ? `<div class="gloss">${escapeHtml(note.gloss)}</div>` : ""}
+      ${note.audioUrl ? `<audio controls src="${escapeHtml(note.audioUrl)}" style="margin-top: 12px"></audio>` : ""}
+
+      <div id="pronunciation-control">
+        ${
+          state.recording === "recording"
+            ? `<button id="mic-btn" class="mic-btn recording">⏹</button>
+               <div id="pronunciation-status">Recording — tap to stop</div>`
+            : state.recording === "scoring"
+            ? `<button class="mic-btn" disabled>…</button>
+               <div id="pronunciation-status">Scoring…</div>`
+            : `<button id="mic-btn" class="mic-btn">🎤</button>
+               <div id="pronunciation-status">Tap to record yourself saying this</div>`
+        }
+      </div>
+
+      ${
+        result && !result.error
+          ? `<div id="pronunciation-result" class="bucket-${result.bucket}">
+               <div class="bucket-label">${result.bucket.toUpperCase()}</div>
+               <div class="transcript">Heard: "${escapeHtml(result.transcript)}"</div>
+             </div>
+             <button id="continue-btn">Continue</button>`
+          : ""
+      }
+      ${result?.error ? `<div id="pronunciation-error">${escapeHtml(result.error)}</div>` : ""}
+
+      <div id="tools-row">
+        <button id="suspend">Suspend</button>
+        <button id="delete">Delete</button>
+      </div>
+    </div>
+  `;
+
+  const micBtn = document.getElementById("mic-btn");
+  if (micBtn && state.recording === "idle") micBtn.addEventListener("click", startRecording);
+  if (micBtn && state.recording === "recording") micBtn.addEventListener("click", stopAndScore);
+  document.getElementById("continue-btn")?.addEventListener("click", continueAfterScore);
+  document.getElementById("suspend").addEventListener("click", suspendCurrent);
+  document.getElementById("delete").addEventListener("click", deleteCurrent);
 }
 
 // ---------------------------------------------------------------------------

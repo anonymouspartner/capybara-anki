@@ -8,6 +8,7 @@ function review(overrides: Partial<ReviewRow> = {}): ReviewRow {
   return {
     id: crypto.randomUUID(),
     noteId: "n1",
+    cardKind: "recall",
     userId: "tim",
     rating: 3,
     reviewedAt: NOW,

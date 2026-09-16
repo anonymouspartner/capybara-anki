@@ -1,5 +1,7 @@
 /**
- * Which notes are due for review, right now, for one person.
+ * Which cards are due for review, right now, for one person. "Card" here means
+ * `(noteId, cardKind)` (D17) — almost always one card per note, except a
+ * `Capybara+` note's real second `Spelling` card, scheduled independently.
  *
  * This is a real design decision, not a port of Anki's own queue algorithm — Anki's
  * v3 scheduler's gather/interleave behavior is genuinely complex (separate "gather
@@ -25,7 +27,7 @@
  * offers, or the two would drift apart the first time this policy changes.
  */
 
-import type { DailyCounts, DueCandidate, QueueLimits, QueueSummary } from "./types.ts";
+import type { DailyCounts, DueCandidate, DueItem, QueueLimits, QueueSummary } from "./types.ts";
 
 interface Categorized {
   learning: DueCandidate[];
@@ -66,9 +68,9 @@ export function selectDueQueue(
   limits: QueueLimits,
   counts: DailyCounts,
   now: Date,
-): string[] {
+): DueItem[] {
   const { learning, review, newCards } = categorize(candidates, limits, counts, now);
-  return [...learning, ...review, ...newCards].map((c) => c.noteId);
+  return [...learning, ...review, ...newCards].map((c) => ({ noteId: c.noteId, cardKind: c.cardKind }));
 }
 
 /** Same categorization as `selectDueQueue`, as counts — what a deck-list row shows

@@ -46,21 +46,38 @@ CREATE TABLE IF NOT EXISTS "public"."notes" (
     -- Pronunciation) made "browse by deck" look core rather than a detail; default
     -- keeps this column additive for any row inserted before the app had decks.
     "deck" "text" DEFAULT 'Ukrainian' NOT NULL,
+    -- D18, resolved against a real export 2026-09-16: a "Capybara Pronunciation
+    -- (shadowing)" note is a `notes` row too, `kind = 'pronunciation'`, reusing
+    -- these same columns (TargetText->lemma, ReferenceAudio->audio_url,
+    -- Translation->lemma_translation, Hint->gloss) rather than a parallel table.
+    "kind" "text" DEFAULT 'vocab' NOT NULL,
+    -- D17, resolved against the same export: true only for a real `Capybara+`
+    -- note, which produces a second, independently-scheduled `Spelling` card
+    -- (see card_state/reviews' card_kind column below). Default false keeps this
+    -- additive for every note that isn't one.
+    "has_spelling" boolean DEFAULT false NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "notes_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "notes_anki_guid_key" UNIQUE ("anki_guid"),
     CONSTRAINT "notes_language_check" CHECK (("language" = ANY (ARRAY['uk'::"text", 'en'::"text"]))),
-    CONSTRAINT "notes_source_check" CHECK (("source" = ANY (ARRAY['scan'::"text", 'bot'::"text", 'anki-import'::"text"])))
+    CONSTRAINT "notes_source_check" CHECK (("source" = ANY (ARRAY['scan'::"text", 'bot'::"text", 'anki-import'::"text"]))),
+    CONSTRAINT "notes_kind_check" CHECK (("kind" = ANY (ARRAY['vocab'::"text", 'pronunciation'::"text"])))
 );
 
--- One row per note. A cache over "reviews" (docs/DESIGN.md §4.3), folded without
--- regard to who reviewed — see D2. Correct as long as a note is only ever reviewed
--- by one person, which decks being disjoint by language makes true today; the
--- escape hatch if that ever stops holding is to split this table by (note_id,
--- user_id) and rebuild it by replaying "reviews" — nothing about "reviews" itself
--- has to change to do that.
+-- One row per CARD, not per note (D17, resolved 2026-09-16 against a real export:
+-- a `Capybara+` note's real Anki data confirmed it produces two independently-
+-- scheduled cards — separate `cards` rows, separate revlog history — so folding
+-- them into one row per note would silently merge two different memory states).
+-- `card_kind` defaults to 'recall'; 'spelling' only ever exists for a note with
+-- `notes.has_spelling`. A cache over "reviews" (docs/DESIGN.md §4.3), folded
+-- without regard to who reviewed — see D2. Correct as long as a note is only ever
+-- reviewed by one person, which decks being disjoint by language makes true
+-- today; the escape hatch if that ever stops holding is to split this table by
+-- (note_id, card_kind, user_id) and rebuild it by replaying "reviews" — nothing
+-- about "reviews" itself has to change to do that.
 CREATE TABLE IF NOT EXISTS "public"."card_state" (
     "note_id" "uuid" NOT NULL,
+    "card_kind" "text" DEFAULT 'recall' NOT NULL,
     "due" timestamp with time zone,
     "stability" real,
     "difficulty" real,
@@ -80,7 +97,8 @@ CREATE TABLE IF NOT EXISTS "public"."card_state" (
     -- appeared in "reviews" for this note. Lets the reviewer filter "my due queue"
     -- without a join.
     "last_user_id" "uuid",
-    CONSTRAINT "card_state_pkey" PRIMARY KEY ("note_id"),
+    CONSTRAINT "card_state_pkey" PRIMARY KEY ("note_id", "card_kind"),
+    CONSTRAINT "card_state_card_kind_check" CHECK (("card_kind" = ANY (ARRAY['recall'::"text", 'spelling'::"text"]))),
     CONSTRAINT "card_state_state_check" CHECK ((("state" IS NULL) OR ("state" BETWEEN 0 AND 3))),
     CONSTRAINT "card_state_note_id_fkey" FOREIGN KEY ("note_id") REFERENCES "public"."notes"("id") ON DELETE CASCADE,
     CONSTRAINT "card_state_last_user_id_fkey" FOREIGN KEY ("last_user_id") REFERENCES "public"."users"("id")
@@ -91,10 +109,12 @@ CREATE INDEX IF NOT EXISTS "card_state_due_idx" ON "public"."card_state" USING "
 
 -- Append-only. The sync primitive (docs/DESIGN.md §4.2). Never updated, never
 -- deleted by the application. "id" is client-generated so a retried or replayed
--- ingest is an idempotent no-op, not a duplicate.
+-- ingest is an idempotent no-op, not a duplicate. "card_kind" (D17) records which
+-- of a note's (one or two) cards this answers — see card_state's own comment.
 CREATE TABLE IF NOT EXISTS "public"."reviews" (
     "id" "uuid" NOT NULL,
     "note_id" "uuid" NOT NULL,
+    "card_kind" "text" DEFAULT 'recall' NOT NULL,
     "user_id" "uuid" NOT NULL,
     "rating" smallint NOT NULL,
     -- Client clock: when the review actually happened. What FSRS replay needs.
@@ -106,6 +126,7 @@ CREATE TABLE IF NOT EXISTS "public"."reviews" (
     "ingested_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "reviews_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "reviews_rating_check" CHECK (("rating" BETWEEN 1 AND 4)),
+    CONSTRAINT "reviews_card_kind_check" CHECK (("card_kind" = ANY (ARRAY['recall'::"text", 'spelling'::"text"]))),
     CONSTRAINT "reviews_note_id_fkey" FOREIGN KEY ("note_id") REFERENCES "public"."notes"("id") ON DELETE CASCADE,
     CONSTRAINT "reviews_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id")
 );

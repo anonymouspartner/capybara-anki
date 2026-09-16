@@ -7,6 +7,7 @@ const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500 };
 function newCardState(overrides: Partial<CardStateRow> = {}): CardStateRow {
   return {
     noteId: "n1",
+    cardKind: "recall",
     due: null,
     stability: null,
     difficulty: null,
@@ -23,7 +24,7 @@ function newCardState(overrides: Partial<CardStateRow> = {}): CardStateRow {
 Deno.test("reviewing a never-studied note (no card_state row) produces a real state", () => {
   const { reviewRow, cardStateRow } = buildReviewMutation(
     null,
-    { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
     PARAMS,
   );
   assertEquals(reviewRow.elapsedDays, 0); // first-ever review of this card
@@ -36,7 +37,7 @@ Deno.test("reviewing an already-suspended card does not unsuspend it", () => {
   const suspended = newCardState({ suspended: true });
   const { cardStateRow } = buildReviewMutation(
     suspended,
-    { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
     PARAMS,
   );
   assertEquals(cardStateRow.suspended, true);
@@ -48,7 +49,7 @@ Deno.test("reviewing a row that exists only because it was pre-emptively suspend
   const suspendedButNeverStudied = newCardState({ suspended: true });
   const { cardStateRow } = buildReviewMutation(
     suspendedButNeverStudied,
-    { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
     PARAMS,
   );
   assertEquals(cardStateRow.reps, 1); // treated as the card's first-ever review
@@ -58,20 +59,20 @@ Deno.test("elapsedDays on the review row reflects the gap since the prior review
   const firstReviewDate = new Date("2026-01-01T00:00:00Z");
   const { cardStateRow: afterFirst } = buildReviewMutation(
     null,
-    { reviewId: "r1", noteId: "n1", userId: "tim", rating: 3, reviewedAt: firstReviewDate },
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: firstReviewDate },
     PARAMS,
   );
   const secondReviewDate = new Date("2026-01-05T00:00:00Z");
   const { reviewRow: secondReviewRow } = buildReviewMutation(
     afterFirst,
-    { reviewId: "r2", noteId: "n1", userId: "tim", rating: 3, reviewedAt: secondReviewDate },
+    { reviewId: "r2", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: secondReviewDate },
     PARAMS,
   );
   assertEquals(secondReviewRow.elapsedDays, 4);
 });
 
 Deno.test("suspending a never-reviewed note creates a card_state row from nothing", () => {
-  const result = buildSuspendMutation(null, "n1", true);
+  const result = buildSuspendMutation(null, "n1", "recall", true);
   assertEquals(result.suspended, true);
   assertEquals(result.noteId, "n1");
   assertEquals(result.stability, null); // still genuinely new — nothing invented
@@ -79,7 +80,7 @@ Deno.test("suspending a never-reviewed note creates a card_state row from nothin
 
 Deno.test("suspending an already-reviewed note leaves its FSRS state untouched", () => {
   const reviewed = newCardState({ stability: 8.5, difficulty: 5.2, reps: 3, state: 2 });
-  const result = buildSuspendMutation(reviewed, "n1", true);
+  const result = buildSuspendMutation(reviewed, "n1", "recall", true);
   assertEquals(result.suspended, true);
   assertEquals(result.stability, 8.5);
   assertEquals(result.reps, 3);
@@ -87,9 +88,21 @@ Deno.test("suspending an already-reviewed note leaves its FSRS state untouched",
 
 Deno.test("unsuspending is the same operation with the opposite boolean", () => {
   const suspended = newCardState({ suspended: true, stability: 8.5 });
-  const result = buildSuspendMutation(suspended, "n1", false);
+  const result = buildSuspendMutation(suspended, "n1", "recall", false);
   assertEquals(result.suspended, false);
   assertEquals(result.stability, 8.5);
+});
+
+Deno.test("D17: a note's recall and spelling cards keep fully independent state", () => {
+  const recallState = newCardState({ cardKind: "recall", stability: 20, reps: 5 });
+  const { cardStateRow: spellingResult } = buildReviewMutation(
+    null, // this note's spelling card has never been reviewed, even though recall has
+    { reviewId: "r1", noteId: "n1", cardKind: "spelling", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    PARAMS,
+  );
+  assertEquals(spellingResult.cardKind, "spelling");
+  assertEquals(spellingResult.reps, 1); // spelling's own first review, unaffected by recall's history
+  assertEquals(recallState.reps, 5); // untouched — a different row entirely
 });
 
 Deno.test("an empty lemma is rejected — a card needs something on its front", () => {
