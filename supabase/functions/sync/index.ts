@@ -4,10 +4,13 @@
  * `Deno.env.get`) deliberately, since D6 reuses that pattern rather than
  * inventing a second one.
  *
- * **Not deployed. Not deployable yet, on purpose — see PostgresStore below.**
- * Claude builds and commits; the maintainer deploys, and only on an explicit,
- * in-the-moment request (this repo's README, capybara-bot's CLAUDE.md). This file
- * exists so the real wiring is visible and reviewable now, not so it ships today.
+ * **Not deployed.** `PostgresStore` (`../_shared/postgresStore.ts`) is now real,
+ * written against the live `anki_*` tables (docs/DESIGN.md §5, applied
+ * 2026-09-16) rather than guessed — but deploying this function is still a
+ * separate, undone step: Claude builds and commits; the maintainer deploys, and
+ * only on an explicit, in-the-moment request (this repo's README, capybara-bot's
+ * CLAUDE.md). This file exists so the real wiring is visible and reviewable now,
+ * not so it ships today.
  *
  * Routes:
  *   GET    /sync/decks            → deck-list screen: every deck this user has
@@ -50,74 +53,7 @@ import {
 } from "../../../src/review/handlers.ts";
 import type { Store } from "../../../src/review/store.ts";
 import { resolveUserId } from "../../../src/auth.ts";
-
-// ---------------------------------------------------------------------------
-// Store — NOT YET IMPLEMENTED
-// ---------------------------------------------------------------------------
-
-/**
- * A real `Store` backed by Postgres (via `@supabase/supabase-js`) belongs here.
- * Deliberately not written yet: every other piece of this repo that touches
- * external data — the Anki collection reader, the FSRS replay logic, this
- * function's own routing — was built against something concrete enough to test
- * (a real export, the real `ts-fsrs` library, `InMemoryStore`) and had at least one
- * real assumption corrected in the process (docs/DESIGN.md §7.5, §5.1). A
- * `PostgresStore` written against no live project would skip that step entirely —
- * exactly the kind of untested code this whole build has been deliberately
- * avoiding. Write it once there's a project to run it against, even a scratch one,
- * and expect the same thing to happen: something about `@supabase/supabase-js`'s
- * actual query builder, RLS, or error shapes won't match what's guessed here.
- *
- * `Store`'s shape (src/review/store.ts) is intentionally already exactly what this
- * needs to implement — that interface is the real contract, this class is the one
- * piece still missing.
- */
-class PostgresStore implements Store {
-  constructor(_supabaseUrl: string, _serviceRoleKey: string) {}
-
-  getNote(_noteId: string): ReturnType<Store["getNote"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getCardState(_noteId: string, _cardKind: Parameters<Store["getCardState"]>[1]): ReturnType<Store["getCardState"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getSchedulerConfig(_userId: string): ReturnType<Store["getSchedulerConfig"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  createNote(_note: Parameters<Store["createNote"]>[0]): ReturnType<Store["createNote"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getDecks(_userId: string): ReturnType<Store["getDecks"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getDueCandidates(_userId: string, _deck?: string): ReturnType<Store["getDueCandidates"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getDailyCounts(_userId: string, _now: Date, _deck?: string): ReturnType<Store["getDailyCounts"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getReviewsSince(_userId: string, _since: Date): ReturnType<Store["getReviewsSince"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  getCardStateCounts(_userId: string): ReturnType<Store["getCardStateCounts"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  insertReview(_row: Parameters<Store["insertReview"]>[0]): ReturnType<Store["insertReview"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  upsertCardState(_row: Parameters<Store["upsertCardState"]>[0]): ReturnType<Store["upsertCardState"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  updateNote(
-    _noteId: string,
-    _patch: Parameters<Store["updateNote"]>[1],
-  ): ReturnType<Store["updateNote"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-  deleteNote(_noteId: string): ReturnType<Store["deleteNote"]> {
-    throw new Error("PostgresStore is not implemented yet — see this class's docstring");
-  }
-}
+import { PostgresStore } from "../_shared/postgresStore.ts";
 
 function getStore(): Store {
   const url = Deno.env.get("SUPABASE_URL");
