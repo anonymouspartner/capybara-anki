@@ -28,12 +28,25 @@ class Note:
     example_translation: str | None
     audio_url: str | None
     source: str = "anki-import"
+    # D17/D18, resolved against a real export 2026-09-16 (docs/DESIGN.md §7.5
+    # finding 5, §8): a note's home deck, whether it's a plain vocab note or a
+    # `Capybara Pronunciation (shadowing)` one, and whether it also produces a real
+    # second Anki card (a `Capybara+` note). All three default to the schema's own
+    # every-other-note case so a caller building a Note without deck/kind/has_spelling
+    # in mind (every test written before this) still gets something valid.
+    deck: str = "Ukrainian"
+    kind: str = "vocab"  # 'vocab' | 'pronunciation'
+    has_spelling: bool = False
     created_at: datetime | None = None
 
 
 @dataclass
 class CardState:
-    """One row of `card_state`, keyed on note_id alone per the resolved D2.
+    """One row of `card_state`, keyed on (note_id, card_kind) — D17, resolved against
+    a real export: a `Capybara+` note's second card is independently scheduled, so
+    folding both into one row per note would silently merge two different memory
+    states. `card_kind` defaults to 'recall'; 'spelling' only exists for a card drawn
+    from a note's own Spelling-deck card (see transform.py's `card_kind_for`).
 
     `last_user_id` is denormalized and never authoritative — see the comment in
     docs/DESIGN.md §5 above this table. The migration sets it to whoever's export
@@ -50,6 +63,7 @@ class CardState:
     lapses: int
     suspended: bool
     last_user_id: str
+    card_kind: str = "recall"  # 'recall' | 'spelling'
 
 
 @dataclass
@@ -63,6 +77,7 @@ class Review:
     reviewed_at: datetime
     elapsed_days: int
     scheduled_days: int
+    card_kind: str = "recall"  # 'recall' | 'spelling' — D17, see CardState above
     ingested_at: datetime | None = None
 
 
