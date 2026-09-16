@@ -5,10 +5,14 @@
 
 import { captureTokenFromUrl, getToken } from "./auth.js";
 
+// See app.js's own comment on this — Supabase Edge Functions only ever answer
+// under /functions/v1/<slug>, never bare root.
+const API_BASE = "/functions/v1";
+
 const contentEl = document.getElementById("content");
 
 async function api(path) {
-  const res = await fetch(path, { headers: { authorization: `Bearer ${getToken()}` } });
+  const res = await fetch(API_BASE + path, { headers: { authorization: `Bearer ${getToken()}` } });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
   return res.json();
 }
