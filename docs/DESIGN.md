@@ -337,15 +337,23 @@ being scoped by `user_id` resolved from the token, not typed in.
 
 **Implemented, not a sketch** — `supabase/migrations/20260915210000_capybara_anki_schema.sql`
 has the real DDL (foreign keys, checks, indexes); this section is the annotated summary.
-Not applied anywhere — see that file's header for why and to which project.
+**Applied 2026-09-16**, on an explicit, in-the-moment request — see that file's header.
 
 Foreign keys point at `capybara-bot`'s existing `"public"."users"` table (D4: same
 Supabase project), not a parallel identity system — a D13 device token resolves to
 one of its two rows, and that's what "which user" means in every table below.
 
+**Table names are prefixed `anki_`.** Found before ever applying anything (checking
+the live project's actual schema first, not assuming): `"public"."notes"` was already
+taken by capybara-bot's own unrelated `/remember`/`/pin` personal-notes feature.
+`CREATE TABLE IF NOT EXISTS` against that name would have silently no-opped, leaving
+this app's real notes table missing while the rest got created fine. Prefixed all
+four tables, not just the one that collided, since a second undetected collision
+wasn't a risk worth keeping once one had already turned up unannounced.
+
 ```sql
 -- Shared pool. Both users see every note.
-notes (
+anki_notes (
   id            uuid primary key,
   anki_guid     text unique,      -- migration idempotency key (§7.2)
   lemma, gloss, lemma_translation,
@@ -357,11 +365,11 @@ notes (
   -- that. Added after the fact (§5.2), once real AnkiDroid screenshots made
   -- "browse by deck" look core to how this is actually used, not a detail.
   deck          text default 'Ukrainian',
-  -- D18, resolved against a real export: a Pronunciation note is a `notes` row
+  -- D18, resolved against a real export: a Pronunciation note is an `anki_notes` row
   -- too (`kind = 'pronunciation'`), reusing lemma/audio_url/lemma_translation/
   -- gloss for TargetText/ReferenceAudio/Translation/Hint rather than a parallel
   -- table. D17: has_spelling marks a real `Capybara+` note, which produces a
-  -- second, independently-scheduled Spelling card (card_state.card_kind below).
+  -- second, independently-scheduled Spelling card (anki_card_state.card_kind below).
   kind          text default 'vocab' check (kind in ('vocab', 'pronunciation')),
   has_spelling  boolean default false,
   created_at    timestamptz
@@ -372,11 +380,11 @@ notes (
 -- (separate cards rows, separate revlog history), so folding them into one row
 -- per note would silently merge two different memory states. card_kind defaults
 -- to 'recall'; 'spelling' only exists for a note with has_spelling. A cache over
--- `reviews` (§4.3), folded without regard to who reviewed — see D2. Correct as
+-- `anki_reviews` (§4.3), folded without regard to who reviewed — see D2. Correct as
 -- long as a note is only ever reviewed by one person, which decks being disjoint
 -- by language makes true today.
-card_state (
-  note_id       uuid references notes(id),
+anki_card_state (
+  note_id       uuid references anki_notes(id),
   card_kind     text default 'recall' check (card_kind in ('recall', 'spelling')),
   primary key (note_id, card_kind),
   due           timestamptz,      -- a real FSRS moment, not a day — see below
@@ -396,18 +404,18 @@ card_state (
   last_review   timestamptz,
   suspended     boolean,
   -- Denormalized from the fold, not authoritative: whichever user_id last
-  -- appeared in `reviews` for this note. Lets the reviewer filter "my due
+  -- appeared in `anki_reviews` for this note. Lets the reviewer filter "my due
   -- queue" without a join. If a note is ever reviewed by both users, this
-  -- column stops meaning anything and card_state must be split into a real
-  -- (note_id, user_id) table by replaying `reviews` — the escape hatch D2
-  -- exists for. Nothing about `reviews` itself has to change to do that.
+  -- column stops meaning anything and anki_card_state must be split into a real
+  -- (note_id, user_id) table by replaying `anki_reviews` — the escape hatch D2
+  -- exists for. Nothing about `anki_reviews` itself has to change to do that.
   last_user_id  uuid references users(id)
 );
 
 -- Append-only. The sync primitive (§4.2). Never updated, never deleted.
-reviews (
+anki_reviews (
   id            uuid primary key, -- client-generated → idempotent upsert
-  note_id       uuid references notes(id),
+  note_id       uuid references anki_notes(id),
   card_kind     text default 'recall' check (card_kind in ('recall', 'spelling')),
   user_id       uuid references users(id),
   rating        smallint,         -- 1..4 — matches ts-fsrs's Rating enum exactly,
@@ -415,7 +423,7 @@ reviews (
                                    -- no translation needed anywhere in the pipeline
   reviewed_at   timestamptz,      -- client clock, when it happened
   elapsed_days  integer,          -- recorded for audit/cross-check; NOT an input
-                                   -- to replay — see card_state.last_review above
+                                   -- to replay — see anki_card_state.last_review above
   scheduled_days integer,
   ingested_at   timestamptz default now()  -- server clock, when it arrived
 );
@@ -428,7 +436,7 @@ reviews (
 -- back to its own built-in defaults for an empty or wrong-length array
 -- (confirmed directly against the library), so the application layer never
 -- needs to special-case it.
-scheduler_config (
+anki_scheduler_config (
   user_id           uuid primary key references users(id),
   fsrs_params       real[],
   desired_retention real,
