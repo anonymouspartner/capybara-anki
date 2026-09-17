@@ -453,9 +453,6 @@ export class PostgresStore implements Store {
       },
     );
 
-    // Scoping to a deck asks which of the touched notes are in it, rather than
-    // listing the deck's whole contents — that select was unbounded, and so was
-    // one PostgREST max-rows cap away from silently dropping notes.
     // Which of the touched notes sit in the requested deck. Asked about the
     // touched notes alone rather than by listing the deck's whole contents —
     // that select was unbounded, and so one PostgREST max-rows cap away from
