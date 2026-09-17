@@ -34,7 +34,7 @@
 import { createMessagesClient, extractVocabularyFromPage } from "../../../src/scan/extract.ts";
 import { importExtractedCards, type NoteCreator } from "../../../src/scan/import.ts";
 import { PageExtractionError } from "../../../src/scan/types.ts";
-import { resolveUserId } from "../../../src/auth.ts";
+import { resolveUserIdFromRequest } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
 import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.39.0";
@@ -112,7 +112,7 @@ Deno.serve(async (req) => {
   // Gates access only — a scanned note isn't attributed to whoever scanned it.
   // `notes` is a shared pool (D2), so unlike `/sync` there's no per-user id to
   // thread through to a store call here.
-  if (!resolveUserId(req)) return json({ error: "unauthorized" }, 401);
+  if (!await resolveUserIdFromRequest(req)) return json({ error: "unauthorized" }, 401);
 
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) return json({ error: "scanning is not configured" }, 500);

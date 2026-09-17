@@ -14,10 +14,13 @@
 // self-graded four-button tap. Spelling (D17's `card_kind`) surfaces as a second
 // due item alongside a `Capybara+` note's normal recall card, not a separate deck.
 //
-// Auth (D13, §4.5): install is opening one link, `#t=<token>`. `auth.js` (shared
-// with scan.js) reads the fragment, stores the token, and strips it from the
-// visible URL and history so it never lingers there or gets shared by accident —
-// this file just sends it as a bearer token on every call.
+// Auth: two ways in, both resolved by `auth.js` (shared with scan.js/stats.js),
+// so this file only ever asks for a finished Authorization header. Outside
+// Telegram it's D13's device token (§4.5) — install is opening one link,
+// `#t=<token>`, which auth.js stores and strips from the visible URL so it never
+// lingers there or gets shared by accident. Inside Telegram (#17) it's the
+// signed `initData` Telegram issues per launch, which the server verifies
+// rather than compares.
 //
 // Offline (step 3, §6): `offline.js` is the IndexedDB-backed review queue and
 // response cache; `api()` below is the one place that decides when to fall back to
@@ -25,23 +28,28 @@
 // offline-safe automatically rather than each needing its own try/catch.
 
 import * as offline from "./offline.js";
-import { captureTokenFromUrl, getToken } from "./auth.js";
+import { authHeader, captureTokenFromUrl, isTelegramMiniApp } from "./auth.js";
+import { initTelegram } from "./telegram.js";
 import { API_BASE } from "./config.js";
 
 async function api(path, options = {}) {
-  const token = getToken();
+  const auth = authHeader();
   const method = options.method ?? "GET";
   try {
     const res = await fetch(API_BASE + path, {
       ...options,
       headers: {
         "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(auth ? { authorization: auth } : {}),
         ...options.headers,
       },
     });
     if (!res.ok && res.status !== 400) {
-      throw new Error(`${method} ${path} -> ${res.status}`);
+      const error = new Error(`${method} ${path} -> ${res.status}`);
+      // Carried as a field rather than parsed back out of the message, so a
+      // caller can tell "you aren't who you say you are" from "that broke".
+      error.status = res.status;
+      throw error;
     }
     const data = await res.json();
     if (method === "GET") await offline.cacheResponse(path, data);
@@ -126,7 +134,13 @@ async function showDeckList() {
   try {
     state.decks = await api("/sync/decks");
   } catch (e) {
-    contentEl.innerHTML = `<div id="error">Couldn't load decks.</div>`;
+    // Inside Telegram a 401 has one likely cause worth naming: the credential
+    // was signed correctly, but this Telegram account isn't one of the two this
+    // instance is configured for. "Couldn't load decks" sends someone hunting
+    // for a network problem that isn't there.
+    contentEl.innerHTML = e.status === 401 && isTelegramMiniApp()
+      ? `<div id="error">This Telegram account isn't set up for this collection.</div>`
+      : `<div id="error">Couldn't load decks.</div>`;
     console.error(e);
     return;
   }
@@ -226,13 +240,13 @@ async function refreshStatsStrip() {
 async function flushPendingReviews() {
   const pending = await offline.listPendingReviews();
   for (const review of pending) {
-    const token = getToken();
-    if (!token) return;
+    const auth = authHeader();
+    if (!auth) return;
     let res;
     try {
       res = await fetch(API_BASE + "/sync/review", {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        headers: { "content-type": "application/json", authorization: auth },
         body: JSON.stringify(review),
       });
     } catch {
@@ -545,8 +559,9 @@ function renderPronunciationReview(note) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  initTelegram();
   captureTokenFromUrl();
-  if (!getToken()) {
+  if (!authHeader()) {
     contentEl.innerHTML = `<div id="error">No access token. Open your install link again.</div>`;
     return;
   }

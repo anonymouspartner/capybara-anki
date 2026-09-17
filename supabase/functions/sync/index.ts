@@ -55,7 +55,7 @@ import {
   submitReview,
 } from "../../../src/review/handlers.ts";
 import type { Store } from "../../../src/review/store.ts";
-import { resolveUserId } from "../../../src/auth.ts";
+import { resolveUserIdFromRequest } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
 import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 
@@ -137,7 +137,7 @@ Deno.serve(async (req) => {
   const preflight = corsPreflight(req);
   if (preflight) return preflight;
 
-  const userId = resolveUserId(req);
+  const userId = await resolveUserIdFromRequest(req);
   if (!userId) return json({ error: "unauthorized" }, 401);
 
   try {

@@ -4,7 +4,7 @@
 // queue app.js reads from), not something to fake via an HTTP cache that could
 // silently serve stale due-queue data as if it were current.
 
-const CACHE_NAME = "capybara-anki-shell-v5";
+const CACHE_NAME = "capybara-anki-shell-v6";
 // Hosted on GitHub Pages (a project site: https://<owner>.github.io/<repo>/,
 // not domain root) — these are resolved against sw.js's own URL at runtime,
 // not hardcoded, so the shell caches correctly regardless of the subpath (or
@@ -16,6 +16,7 @@ const SHELL_FILE_NAMES = [
   "config.js",
   "offline.js",
   "auth.js",
+  "telegram.js",
   "theme.css",
   "scan.html",
   "scan.js",
