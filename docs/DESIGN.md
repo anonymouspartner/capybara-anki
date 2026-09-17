@@ -118,13 +118,28 @@ Revised 2026-09-16, against `anki_notes.source`'s own CHECK constraint (§5), wh
 already listed `'bot'` as a first-class value alongside `'scan'`/`'anki-import'`
 by the time that table was designed — stronger, more specific evidence of intent
 than this section's original sentence ("no change to `index.ts` is in scope"),
-written before `anki_notes` existed as a concept. `annotateMessage` (capybara-bot's
-`telegram-bot/index.ts`) now dual-writes: the same vocabulary it already upserts
-into `vocabulary` also gets upserted into `anki_notes` with `source: 'bot'`, so it
-becomes a real, independently-scheduled reviewable card in this app — not a
-reconciliation job, not a second table capybara-anki reads, just one more `upsert`
-call next to the one already there. `vocabulary`/`flashcards` themselves are
-untouched by this — capybara-anki never reads them.
+written before `anki_notes` existed as a concept. capybara-bot writes cards into
+`anki_notes` with `source: 'bot'`, so a word chosen in the chat becomes a real,
+independently-scheduled card here — not a reconciliation job, not a second table
+capybara-anki reads. `vocabulary`/`flashcards` themselves are untouched, and
+capybara-anki never reads them.
+
+**Corrected 2026-09-17, against the row counts.** The first version of that write
+lived in `annotateMessage` and mirrored `vocabulary` — every word the annotator
+has ever seen. Measured on the live project, that is **11,329 rows**, against
+**776** in `flashcards`, the deck someone deliberately built with `/learn`. A
+15:1 ratio, and `/export` — the thing this whole path exists to replace — has
+always been built from `flashcards`. So the write moved to where the choosing
+happens (`/learn`, `/learn top`, and the grammar assistant), annotation creates
+no cards at all, and `/forget` removes one. It had written nothing before the
+correction landed, so no cleanup was needed. The lesson worth keeping: in the
+bot's schema `vocabulary` is a *candidate pool*, not a deck, and only one of
+those two is a set of flashcards.
+
+Grammar corrections come across as well, into a `Grammar` deck, in the same
+fill-in-the-blank shape `/export`'s `Capybara::Grammar` deck has always used. One
+builder in the bot shapes every card for both sinks, so the CSV and this app
+cannot drift apart.
 
 ### 2.3 Kept forever
 
