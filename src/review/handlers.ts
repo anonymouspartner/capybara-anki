@@ -14,6 +14,7 @@ import {
   validateNoteEdit,
 } from "./mutations.ts";
 import { computeStats, type StatsResult } from "./stats.ts";
+import type { DayBoundary } from "./day.ts";
 import type { CardKind, DueItem, NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
 import type { Store } from "./store.ts";
@@ -24,6 +25,12 @@ function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
     desiredRetention: config.desiredRetention,
     maxInterval: config.maxInterval,
   };
+}
+
+/** The same projection-per-consumer shape as `toFsrsParams` and `QueueLimits`:
+ * a function takes the half of the config it actually uses. */
+export function dayBoundary(config: SchedulerConfigRow): DayBoundary {
+  return { timeZone: config.timeZone, rolloverHour: config.rolloverHour };
 }
 
 /** GET the due queue: `(noteId, cardKind)` pairs only, in review order,
@@ -129,11 +136,12 @@ export async function getStats(
   now: Date,
   days = DEFAULT_STATS_WINDOW_DAYS,
 ): Promise<StatsResult> {
-  const [reviews, cardCounts] = await Promise.all([
+  const [reviews, cardCounts, config] = await Promise.all([
     store.getReviewsSince(userId, ALL_TIME),
     store.getCardStateCounts(userId),
+    store.getSchedulerConfig(userId),
   ]);
-  return computeStats(reviews, cardCounts, now, days);
+  return computeStats(reviews, cardCounts, now, days, dayBoundary(config));
 }
 
 export class NotFoundError extends Error {}

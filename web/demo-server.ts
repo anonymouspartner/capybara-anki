@@ -43,6 +43,10 @@ store.schedulerConfigs.set(DEMO_USER, {
   dailyNewLimit: 40,
   dailyReviewLimit: 200,
   maxInterval: 36500,
+  // The demo has no real person behind it, so it keeps the UTC fallback rather
+  // than pretending to be somewhere.
+  timeZone: null,
+  rolloverHour: 4,
 });
 
 // Placeholder vocabulary only — never real corpus content. Chosen to exercise the

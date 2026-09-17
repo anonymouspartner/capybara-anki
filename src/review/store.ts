@@ -18,6 +18,7 @@ import type {
   SchedulerConfigRow,
   StateCounts,
 } from "./types.ts";
+import { ankiDayKey, type DayBoundary, UTC_MIDNIGHT } from "./day.ts";
 
 export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
@@ -132,12 +133,19 @@ export class InMemoryStore implements Store {
   }
 
   getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
-    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    // Study days, not UTC days — see day.ts. Comparing day keys rather than an
+    // instant is what keeps this DST-safe: no local wall-clock time ever has to
+    // be converted back into a UTC instant.
+    const config = this.schedulerConfigs.get(userId);
+    const boundary: DayBoundary = config
+      ? { timeZone: config.timeZone, rolloverHour: config.rolloverHour }
+      : UTC_MIDNIGHT;
+    const today = ankiDayKey(now, boundary);
     let newTakenToday = 0;
     let reviewTakenToday = 0;
     for (const review of this.reviews.values()) {
       if (review.userId !== userId) continue;
-      if (review.reviewedAt.getTime() < dayStart.getTime()) continue;
+      if (ankiDayKey(review.reviewedAt, boundary) !== today) continue;
       if (deck !== undefined && this.notes.get(review.noteId)?.deck !== deck) continue;
       const stateAtSubmission = this.reviewStateAtSubmission.get(review.id);
       if (stateAtSubmission === null || stateAtSubmission === 0 || stateAtSubmission === undefined) {

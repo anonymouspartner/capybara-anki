@@ -42,6 +42,8 @@ function seedConfig(store: InMemoryStore, userId: string, overrides: Partial<Sch
     dailyNewLimit: 40,
     dailyReviewLimit: 200,
     maxInterval: 36500,
+    timeZone: null,
+    rolloverHour: 4,
     ...overrides,
   });
 }
@@ -365,4 +367,94 @@ Deno.test("getStats: a hasSpelling note's two cards both count toward cardCounts
 
   const stats = await getStats(store, "tim", NOW);
   assertEquals(stats.cardCounts.newCount, 2); // recall + spelling, both new
+});
+
+// ---------------------------------------------------------------------------
+// Day rollover (day.ts) — reaching the daily limits end to end
+// ---------------------------------------------------------------------------
+
+Deno.test("a 1am review counts toward the previous study day, so it doesn't eat today's new limit", () => {
+  // The discriminating case. 2026-09-17T05:00Z is 1am EDT on the 17th, which is
+  // before the 4am rollover, so it belongs to the 16th. Under the old UTC
+  // bucketing both instants are "the 17th" and the review would wrongly consume
+  // one of today's new cards.
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedNote(store, "n2");
+  seedConfig(store, "tim", { timeZone: "America/New_York", dailyNewLimit: 1 });
+
+  const lateNight = new Date("2026-09-17T05:00:00Z"); // 1:00am EDT, study day = the 16th
+  const nextMidday = new Date("2026-09-17T16:00:00Z"); // 12:00pm EDT, study day = the 17th
+
+  return submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: lateNight,
+  }).then(async () => {
+    const counts = await store.getDailyCounts("tim", nextMidday);
+    assertEquals(counts, { newTakenToday: 0, reviewTakenToday: 0 });
+
+    // ...so today's single new-card slot is still unspent and n2 is offered.
+    // n1 is in the queue too, but as an overdue learning card (answered onto a
+    // ~10 minute step at 1am, long past by midday) — not as a new one.
+    const queue = await getDueQueue(store, "tim", nextMidday);
+    assertEquals(noteIds(queue).includes("n2"), true);
+    assertEquals((await store.getCardState("n1", "recall"))?.state, 1);
+  });
+});
+
+Deno.test("an 8pm review counts toward today even though it is already tomorrow in UTC", () => {
+  // The mirror case. 2026-09-17T00:30Z is 8:30pm EDT on the 16th. UTC calls that
+  // the 17th; Eastern calls it the 16th, and so should the limit.
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedNote(store, "n2");
+  seedConfig(store, "tim", { timeZone: "America/New_York", dailyNewLimit: 1 });
+
+  const evening = new Date("2026-09-17T00:30:00Z"); // 8:30pm EDT on the 16th
+  const laterThatEvening = new Date("2026-09-17T02:00:00Z"); // 10:00pm EDT, same study day
+
+  return submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: evening,
+  }).then(async () => {
+    const counts = await store.getDailyCounts("tim", laterThatEvening);
+    assertEquals(counts.newTakenToday, 1);
+
+    // The limit of 1 is spent, so the second note is held back until tomorrow.
+    const queue = await getDueQueue(store, "tim", laterThatEvening);
+    assertEquals(noteIds(queue).includes("n2"), false);
+  });
+});
+
+Deno.test("getStats: a streak survives a late-night session that UTC would split in two", async () => {
+  // What the user actually saw: a streak reading 0 while AnkiDroid, on the same
+  // history, still counted it.
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedConfig(store, "tim", { timeZone: "America/New_York" });
+
+  // Three consecutive Eastern evenings, each at 9pm EDT — which is 01:00Z the
+  // NEXT UTC day every time.
+  for (const [i, iso] of ["2026-09-15T01:00:00Z", "2026-09-16T01:00:00Z", "2026-09-17T01:00:00Z"].entries()) {
+    await submitReview(store, {
+      reviewId: `r${i}`,
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "tim",
+      rating: 3,
+      reviewedAt: new Date(iso),
+    });
+  }
+
+  // Now: 10pm EDT on the 16th — the third session's own study day.
+  const stats = await getStats(store, "tim", new Date("2026-09-17T02:00:00Z"));
+  assertEquals(stats.currentStreak, 3);
 });

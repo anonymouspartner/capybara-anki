@@ -29,6 +29,7 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.108.1";
 import { cardKey } from "../../../src/review/store.ts";
 import type { Store } from "../../../src/review/store.ts";
+import { ankiDayKey, DEFAULT_ROLLOVER_HOUR, type DayBoundary } from "../../../src/review/day.ts";
 import type {
   CardKind,
   CardStateRow,
@@ -96,6 +97,8 @@ function schedulerConfigFromRow(row: Record<string, unknown>): SchedulerConfigRo
     dailyNewLimit: row.daily_new_limit as number,
     dailyReviewLimit: row.daily_review_limit as number,
     maxInterval: row.max_interval as number,
+    timeZone: (row.time_zone as string | null) ?? null,
+    rolloverHour: (row.rollover_hour as number | null) ?? DEFAULT_ROLLOVER_HOUR,
   };
 }
 
@@ -233,7 +236,14 @@ export class PostgresStore implements Store {
   }
 
   async getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
-    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    // Study days, not UTC days (day.ts). Comparing day keys rather than an
+    // instant is what keeps this DST-safe — no local wall-clock time is ever
+    // converted back into a UTC instant, which is the part that breaks twice a
+    // year. The config round trip is the same one getSchedulerConfig already
+    // makes elsewhere in a request; correctness of the daily limits is worth it.
+    const config = await this.getSchedulerConfig(userId);
+    const boundary: DayBoundary = { timeZone: config.timeZone, rolloverHour: config.rolloverHour };
+    const today = ankiDayKey(now, boundary);
 
     // No live analog of InMemoryStore's `reviewStateAtSubmission` map exists here —
     // each request is stateless. Instead: a review counts as "new" iff it's the
@@ -277,7 +287,7 @@ export class PostgresStore implements Store {
       const key = cardKey(row.note_id as string, row.card_kind as CardKind);
       const isFirstEver = !seen.has(key);
       seen.add(key);
-      if (new Date(row.reviewed_at as string).getTime() < dayStart.getTime()) continue;
+      if (ankiDayKey(new Date(row.reviewed_at as string), boundary) !== today) continue;
       if (deckNoteIds && !deckNoteIds.has(row.note_id as string)) continue;
       if (isFirstEver) newTakenToday++;
       else reviewTakenToday++;
