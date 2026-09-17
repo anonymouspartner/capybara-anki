@@ -6,33 +6,29 @@
  * plus the collection's state composition (`StateCounts`, already store-computed).
  */
 
+import { addDays, ankiDayKey, type DayBoundary } from "./day.ts";
 import type { DailyReviewCount, ReviewRow, StateCounts } from "./types.ts";
-
-const MS_PER_DAY = 86_400_000;
-
-function startOfUtcDay(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-}
-
-function addDays(d: Date, days: number): Date {
-  return new Date(d.getTime() + days * MS_PER_DAY);
-}
-
-function dateKey(d: Date): string {
-  return startOfUtcDay(d).toISOString().slice(0, 10);
-}
 
 /** One zero-filled bucket per day in `[now - days + 1, now]`, oldest first — a day
  * with no reviews is a real zero, not a missing entry, so a chart can render a
- * fixed-width axis without the caller reconstructing the gaps itself. */
-export function reviewsByDay(reviews: ReviewRow[], now: Date, days: number): DailyReviewCount[] {
+ * fixed-width axis without the caller reconstructing the gaps itself.
+ *
+ * Days here are study days (see day.ts), not UTC days: a review at 1am local
+ * belongs to the evening that ran into it, the same as it would in Anki. */
+export function reviewsByDay(
+  reviews: ReviewRow[],
+  now: Date,
+  days: number,
+  boundary: DayBoundary,
+): DailyReviewCount[] {
+  const today = ankiDayKey(now, boundary);
   const buckets = new Map<string, DailyReviewCount>();
   for (let i = days - 1; i >= 0; i--) {
-    const key = dateKey(addDays(startOfUtcDay(now), -i));
+    const key = addDays(today, -i);
     buckets.set(key, { date: key, again: 0, hard: 0, good: 0, easy: 0 });
   }
   for (const review of reviews) {
-    const bucket = buckets.get(dateKey(review.reviewedAt));
+    const bucket = buckets.get(ankiDayKey(review.reviewedAt, boundary));
     if (!bucket) continue; // outside the requested window
     if (review.rating === 1) bucket.again++;
     else if (review.rating === 2) bucket.hard++;
@@ -54,14 +50,14 @@ export function successRate(reviews: ReviewRow[]): number | null {
 /** Consecutive days with at least one review, walking back from today. Today not
  * having a review yet doesn't break a streak that's still active — only a missed
  * *prior* day does — so the walk starts at yesterday whenever today is still empty. */
-export function currentStreak(reviews: ReviewRow[], now: Date): number {
-  const daysWithReviews = new Set(reviews.map((r) => dateKey(r.reviewedAt)));
-  let cursor = startOfUtcDay(now);
-  if (!daysWithReviews.has(dateKey(cursor))) {
+export function currentStreak(reviews: ReviewRow[], now: Date, boundary: DayBoundary): number {
+  const daysWithReviews = new Set(reviews.map((r) => ankiDayKey(r.reviewedAt, boundary)));
+  let cursor = ankiDayKey(now, boundary);
+  if (!daysWithReviews.has(cursor)) {
     cursor = addDays(cursor, -1);
   }
   let streak = 0;
-  while (daysWithReviews.has(dateKey(cursor))) {
+  while (daysWithReviews.has(cursor)) {
     streak++;
     cursor = addDays(cursor, -1);
   }
@@ -82,11 +78,12 @@ export function computeStats(
   cardCounts: StateCounts,
   now: Date,
   days: number,
+  boundary: DayBoundary,
 ): StatsResult {
   return {
-    reviewsByDay: reviewsByDay(reviews, now, days),
+    reviewsByDay: reviewsByDay(reviews, now, days, boundary),
     successRate: successRate(reviews),
-    currentStreak: currentStreak(reviews, now),
+    currentStreak: currentStreak(reviews, now, boundary),
     totalReviews: reviews.length,
     cardCounts,
   };

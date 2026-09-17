@@ -162,6 +162,13 @@ export interface SchedulerConfigRow {
   dailyNewLimit: number;
   dailyReviewLimit: number;
   maxInterval: number;
+  /** IANA zone name deciding when this person's study day rolls over (see
+   * day.ts). Per-user rather than per-instance because the two halves of a
+   * couple learning each other's languages are not reliably in the same country.
+   * `null` means UTC, which is what every row meant before this column existed. */
+  timeZone: string | null;
+  /** Local hour the day rolls over at, 0-23. Anki's default is 4. */
+  rolloverHour: number;
 }
 
 /** What submitting an answer to one card provides — everything the caller (an
