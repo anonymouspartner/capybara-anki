@@ -54,14 +54,14 @@
   }
   #notice .notice-text { flex: 1; min-width: 0; }
 
-  /* Spelling cards (the Capybara+ note type's second template). The dots show
-     how many letters are coming, the way AnkiDroid's own spelling card does —
-     enough of a hint to make a long word answerable without giving it away. */
-  #spelling-dots {
-    margin: 18px 0 8px;
-    letter-spacing: 4px;
-    color: var(--btn-again);
-    font-size: 20px;
+  /* Spelling cards (the Capybara+ note type's second template — see
+     renderSpellingReview's own docstring on why there's no letter-count hint
+     here: real Anki has none either, that field doesn't exist). */
+  #spelling-answer {
+    margin: 12px 0 4px;
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--btn-good);
   }
   #spelling-input {
     width: 100%;
