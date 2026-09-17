@@ -12,6 +12,7 @@ import type {
   CardStateRow,
   DailyCounts,
   DueCandidate,
+  DueItem,
   NewNote,
   NoteRow,
   ReviewRow,
@@ -25,6 +26,23 @@ export interface Store {
   /** D17: a card is `(noteId, cardKind)`, not `noteId` alone — every caller already
    * knows which of a note's (one or two) cards it means before asking. */
   getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null>;
+  /** The same answers as calling `getNote`/`getCardState` once per item, in a
+   * bounded number of round trips instead of one per card.
+   *
+   * These exist because the reviewer's own endpoint was the thing making them
+   * necessary: `getDueQueueWithPreviews` asked for one note and one card state
+   * per due card, so opening a deck with 96 cards due cost 192 sequential
+   * queries inside the edge function before the first card could render. The
+   * per-card methods above stay — a single card is still a single lookup, and
+   * `submitReview` genuinely wants one row — but anything assembling a queue
+   * asks in batches.
+   *
+   * Both return maps rather than arrays so a caller never has to re-associate
+   * results with inputs positionally; a missing id is simply absent, which is
+   * the same "no row" the singular methods express as null. `getCardStates`
+   * keys on `cardKey(noteId, cardKind)` (D17 — a note can have two). */
+  getNotes(noteIds: string[]): Promise<Map<string, NoteRow>>;
+  getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
   /** Inserts a note from an ingestion path (`/scan` today) and returns its
    * generated id. No review step (D10) — the row is immediately reviewable. */
@@ -51,7 +69,19 @@ export interface Store {
    * collection-composition breakdown, independent of what's due today. */
   getCardStateCounts(userId: string): Promise<StateCounts>;
 
+  /** Every review this user has given one card, oldest first — the raw material
+   * for rebuilding its state from scratch (§4.3). Scoped to one card rather than
+   * reusing getReviewsSince, which spans the whole collection. */
+  getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]>;
+
   insertReview(row: ReviewRow): Promise<void>;
+  /** Removes one review. The only caller is undo, and it is the one operation
+   * that legitimately shortens the log rather than appending to it. */
+  deleteReview(reviewId: string): Promise<void>;
+  /** Drops a card's state row entirely — what undoing a card's *only* review
+   * leaves behind, since "never reviewed" is the absence of a row, not a row of
+   * zeros (see types.ts). */
+  deleteCardState(noteId: string, cardKind: CardKind): Promise<void>;
   upsertCardState(row: CardStateRow): Promise<void>;
   updateNote(noteId: string, patch: Partial<Omit<NoteRow, "id">>): Promise<void>;
   deleteNote(noteId: string): Promise<void>;
@@ -88,6 +118,25 @@ export class InMemoryStore implements Store {
 
   getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null> {
     return Promise.resolve(this.cardStates.get(cardKey(noteId, cardKind)) ?? null);
+  }
+
+  getNotes(noteIds: string[]): Promise<Map<string, NoteRow>> {
+    const out = new Map<string, NoteRow>();
+    for (const id of noteIds) {
+      const note = this.notes.get(id);
+      if (note) out.set(id, note);
+    }
+    return Promise.resolve(out);
+  }
+
+  getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>> {
+    const out = new Map<string, CardStateRow>();
+    for (const item of items) {
+      const key = cardKey(item.noteId, item.cardKind);
+      const state = this.cardStates.get(key);
+      if (state) out.set(key, state);
+    }
+    return Promise.resolve(out);
   }
 
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow> {
@@ -180,6 +229,25 @@ export class InMemoryStore implements Store {
       }
     }
     return Promise.resolve({ newCount, learningCount, reviewCount, suspendedCount });
+  }
+
+  getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]> {
+    return Promise.resolve(
+      [...this.reviews.values()]
+        .filter((r) => r.userId === userId && r.noteId === noteId && r.cardKind === cardKind)
+        .sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime()),
+    );
+  }
+
+  deleteReview(reviewId: string): Promise<void> {
+    this.reviews.delete(reviewId);
+    this.reviewStateAtSubmission.delete(reviewId);
+    return Promise.resolve();
+  }
+
+  deleteCardState(noteId: string, cardKind: CardKind): Promise<void> {
+    this.cardStates.delete(cardKey(noteId, cardKind));
+    return Promise.resolve();
   }
 
   insertReview(row: ReviewRow): Promise<void> {

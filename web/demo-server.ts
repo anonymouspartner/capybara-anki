@@ -24,8 +24,10 @@ import {
   getStats,
   setSuspended,
   submitReview,
+  undoLastReview,
 } from "../src/review/handlers.ts";
 import { cardKey, InMemoryStore } from "../src/review/store.ts";
+import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD } from "../src/review/leech.ts";
 import type { CardStateRow, NoteRow } from "../src/review/types.ts";
 import { importExtractedCards } from "../src/scan/import.ts";
 import type { ExtractedCard } from "../src/scan/types.ts";
@@ -40,6 +42,8 @@ store.schedulerConfigs.set(DEMO_USER, {
   fsrsParams: [],
   desiredRetention: 0.9,
   learningSteps: [1, 10],
+  leechThreshold: DEFAULT_LEECH_THRESHOLD,
+  leechAction: DEFAULT_LEECH_ACTION,
   dailyNewLimit: 40,
   dailyReviewLimit: 200,
   maxInterval: 36500,
@@ -230,12 +234,18 @@ Deno.serve({ port: 8787 }, async (req) => {
   }
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();
-    await submitReview(store, {
+    const reviewResult = await submitReview(store, {
       reviewId: body.reviewId, noteId: body.noteId, cardKind: body.cardKind ?? "recall", userId: DEMO_USER,
       rating: body.rating, reviewedAt: new Date(body.reviewedAt),
     });
-    return json({ ok: true });
+    return json({ ok: true, leech: reviewResult.becameLeech });
   }
+  if (req.method === "POST" && url.pathname === "/sync/undo") {
+    const body = await req.json();
+    const result = await undoLastReview(store, DEMO_USER, body.noteId, body.cardKind ?? "recall");
+    return json({ ok: true, rating: result.rating });
+  }
+
   if (req.method === "POST" && url.pathname === "/sync/suspend") {
     const body = await req.json();
     await setSuspended(store, body.noteId, body.cardKind ?? "recall", body.suspended);

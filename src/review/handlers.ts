@@ -9,15 +9,26 @@ import { selectDueQueue, summarizeDueQueue } from "./dueQueue.ts";
 import {
   buildReviewMutation,
   buildSuspendMutation,
+  cardSeed,
   type IntervalPreview,
+  mergeCardState,
   previewIntervals,
   validateNoteEdit,
 } from "./mutations.ts";
+import { replayCardState } from "../fsrs/replay.ts";
 import { computeStats, type StatsResult } from "./stats.ts";
 import type { DayBoundary } from "./day.ts";
-import type { CardKind, DueItem, NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
+import type {
+  CardKind,
+  CardStateRow,
+  DueItem,
+  NoteRow,
+  QueueSummary,
+  ReviewInput,
+  SchedulerConfigRow,
+} from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
-import type { Store } from "./store.ts";
+import { cardKey, type Store } from "./store.ts";
 
 function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
   return {
@@ -105,19 +116,35 @@ export async function getDueQueueWithPreviews(
   ]);
   const params = toFsrsParams(config);
 
-  const cards = await Promise.all(items.map(async (item) => {
-    const [note, cardState] = await Promise.all([
-      store.getNote(item.noteId),
-      store.getCardState(item.noteId, item.cardKind),
-    ]);
-    if (!note) return null;
-    return {
+  // Two batched reads for the whole queue, not two per card. The per-card
+  // version of this loop was what made opening a deck slow: 96 due cards meant
+  // 192 queries before the first card could render. The queue is already
+  // bounded by the daily limits, so these batches are small by construction.
+  const [notes, cardStates] = await Promise.all([
+    store.getNotes([...new Set(items.map((i) => i.noteId))]),
+    store.getCardStates(items),
+  ]);
+
+  const cards: DueCard[] = [];
+  for (const item of items) {
+    const note = notes.get(item.noteId);
+    // A note that vanished between selecting the queue and reading it (deleted
+    // from another device mid-session) is skipped rather than rendered blank —
+    // same behaviour as the per-card version's null check.
+    if (!note) continue;
+    cards.push({
       ...note,
       cardKind: item.cardKind,
-      preview: previewIntervals(cardState, item.noteId, item.cardKind, now, params),
-    };
-  }));
-  return cards.filter((c): c is DueCard => c !== null);
+      preview: previewIntervals(
+        cardStates.get(cardKey(item.noteId, item.cardKind)) ?? null,
+        item.noteId,
+        item.cardKind,
+        now,
+        params,
+      ),
+    });
+  }
+  return cards;
 }
 
 const DEFAULT_STATS_WINDOW_DAYS = 30;
@@ -150,14 +177,27 @@ export class NotFoundError extends Error {}
  * (the exact case §4.2 exists for) reaches `store.insertReview`, which no-ops on a
  * duplicate id, but still re-runs `upsertCardState` with the same computed values,
  * so a retry is harmless either way. */
-export async function submitReview(store: Store, input: ReviewInput): Promise<void> {
+export interface SubmitReviewResult {
+  /** True when this answer just pushed the card over the leech threshold — the
+   * reviewer says so rather than letting a card that is never sticking keep
+   * quietly consuming sessions. See leech.ts. */
+  becameLeech: boolean;
+}
+
+export async function submitReview(store: Store, input: ReviewInput): Promise<SubmitReviewResult> {
   const [current, config] = await Promise.all([
     store.getCardState(input.noteId, input.cardKind),
     store.getSchedulerConfig(input.userId),
   ]);
-  const { reviewRow, cardStateRow } = buildReviewMutation(current, input, toFsrsParams(config));
+  const { reviewRow, cardStateRow, becameLeech } = buildReviewMutation(
+    current,
+    input,
+    toFsrsParams(config),
+    { threshold: config.leechThreshold, action: config.leechAction },
+  );
   await store.insertReview(reviewRow);
   await store.upsertCardState(cardStateRow);
+  return { becameLeech };
 }
 
 /** POST suspend or unsuspend one of a note's (one or two, D17) cards. */
@@ -200,4 +240,89 @@ export async function deleteNote(store: Store, noteId: string): Promise<void> {
   const note = await store.getNote(noteId);
   if (!note) throw new NotFoundError(`no note ${noteId}`);
   await store.deleteNote(noteId);
+}
+
+export interface UndoResult {
+  /** The card's state after the undo, or null when the undone review was its
+   * first and it is a new card again. */
+  cardState: CardStateRow | null;
+  /** What the undone answer was, so the reviewer can say "undid Again" rather
+   * than just "undid". */
+  rating: 1 | 2 | 3 | 4;
+}
+
+/**
+ * Takes back this user's most recent answer to one card — the misclick that
+ * every reviewer needs and Anki has always had.
+ *
+ * This is the operation docs/DESIGN.md §4.3 was written for. `card_state` is a
+ * cache — a fold over `reviews` — so undoing is not a matter of guessing what
+ * the card looked like before, or of storing a pre-image alongside every answer.
+ * Drop the review from the log and fold what remains; the result is exactly the
+ * state the card would have had if the answer had never been given, including
+ * its fuzz, because fuzz is seeded on `(card, reps)` and both wind back too.
+ *
+ * `suspended` deliberately survives the undo, for the same reason it isn't part
+ * of the fold anywhere else: it is a UI decision about the card, not a
+ * consequence of how it was answered. Undoing an answer that auto-suspended a
+ * leech therefore leaves it suspended — the answer is taken back, the judgement
+ * about the card is not, and unsuspending is one tap away.
+ *
+ * Scoped to the caller's own reviews: on a shared collection, undo must never
+ * reach across and delete a partner's answer to the same card.
+ */
+export async function undoLastReview(
+  store: Store,
+  userId: string,
+  noteId: string,
+  cardKind: CardKind,
+): Promise<UndoResult> {
+  const [history, config, current] = await Promise.all([
+    store.getReviewsForCard(userId, noteId, cardKind),
+    store.getSchedulerConfig(userId),
+    store.getCardState(noteId, cardKind),
+  ]);
+  const last = history[history.length - 1];
+  if (!last) throw new NotFoundError(`no review to undo for ${noteId}/${cardKind}`);
+
+  await store.deleteReview(last.id);
+
+  const remaining = history.slice(0, -1);
+  const replayed = replayCardState(
+    remaining.map((r) => ({ reviewedAt: r.reviewedAt, rating: r.rating })),
+    toFsrsParams(config),
+    cardSeed(noteId, cardKind),
+  );
+
+  if (replayed === null) {
+    // That was the card's only review. A never-reviewed card has no row at all
+    // — unless something non-scheduling is being carried on it, in which case
+    // the row stays and only the FSRS half is cleared.
+    if (current?.suspended) {
+      await store.upsertCardState(mergeCardState(current, noteId, cardKind, {
+        due: null,
+        stability: null,
+        difficulty: null,
+        state: null,
+        reps: 0,
+        lapses: 0,
+        lastReview: null,
+      }));
+    } else {
+      await store.deleteCardState(noteId, cardKind);
+    }
+    return { cardState: null, rating: last.rating };
+  }
+
+  const cardState = mergeCardState(current, noteId, cardKind, {
+    due: replayed.due,
+    stability: replayed.stability,
+    difficulty: replayed.difficulty,
+    state: replayed.state,
+    reps: replayed.reps,
+    lapses: replayed.lapses,
+    lastReview: replayed.lastReview,
+  });
+  await store.upsertCardState(cardState);
+  return { cardState, rating: last.rating };
 }

@@ -118,13 +118,28 @@ Revised 2026-09-16, against `anki_notes.source`'s own CHECK constraint (§5), wh
 already listed `'bot'` as a first-class value alongside `'scan'`/`'anki-import'`
 by the time that table was designed — stronger, more specific evidence of intent
 than this section's original sentence ("no change to `index.ts` is in scope"),
-written before `anki_notes` existed as a concept. `annotateMessage` (capybara-bot's
-`telegram-bot/index.ts`) now dual-writes: the same vocabulary it already upserts
-into `vocabulary` also gets upserted into `anki_notes` with `source: 'bot'`, so it
-becomes a real, independently-scheduled reviewable card in this app — not a
-reconciliation job, not a second table capybara-anki reads, just one more `upsert`
-call next to the one already there. `vocabulary`/`flashcards` themselves are
-untouched by this — capybara-anki never reads them.
+written before `anki_notes` existed as a concept. capybara-bot writes cards into
+`anki_notes` with `source: 'bot'`, so a word chosen in the chat becomes a real,
+independently-scheduled card here — not a reconciliation job, not a second table
+capybara-anki reads. `vocabulary`/`flashcards` themselves are untouched, and
+capybara-anki never reads them.
+
+**Corrected 2026-09-17, against the row counts.** The first version of that write
+lived in `annotateMessage` and mirrored `vocabulary` — every word the annotator
+has ever seen. Measured on the live project, that is **11,329 rows**, against
+**776** in `flashcards`, the deck someone deliberately built with `/learn`. A
+15:1 ratio, and `/export` — the thing this whole path exists to replace — has
+always been built from `flashcards`. So the write moved to where the choosing
+happens (`/learn`, `/learn top`, and the grammar assistant), annotation creates
+no cards at all, and `/forget` removes one. It had written nothing before the
+correction landed, so no cleanup was needed. The lesson worth keeping: in the
+bot's schema `vocabulary` is a *candidate pool*, not a deck, and only one of
+those two is a set of flashcards.
+
+Grammar corrections come across as well, into a `Grammar` deck, in the same
+fill-in-the-blank shape `/export`'s `Capybara::Grammar` deck has always used. One
+builder in the bot shapes every card for both sinks, so the CSV and this app
+cannot drift apart.
 
 ### 2.3 Kept forever
 
@@ -158,6 +173,8 @@ Locked unless revisited deliberately.
 | D16 | Streamlit scanner stays alive until replaced | No capability gap during the build. |
 | D17 | `card_state`/`reviews` key on `(note_id, card_kind)`, not `note_id` alone | Consequence of §11 item 5, resolved against a real export: `Capybara+`'s 244 notes really do produce two independently-scheduled Anki cards (recall + spelling), each with its own memory state. `card_kind` defaults to `'recall'` — every non-`Capybara+` note only ever has one row, so this is additive, not a rewrite. Resolved 2026-09-16. |
 | D18 | Pronunciation notes are `notes` rows with `kind = 'pronunciation'`, reusing existing columns | §11 item 4, resolved against the same export: the real note type's fields (`TargetText`/`ReferenceAudio`/`Translation`/`Hint`) map directly onto `lemma`/`audio_url`/`lemma_translation`/`gloss` — no new note columns needed. `kind` (default `'vocab'`) is the one addition, and it's what the reviewer UI switches on to render a record-and-score screen instead of reveal-and-rate. Scoring (D14's three buckets) maps to an FSRS rating and goes through the exact same `reviews`/`card_state` machinery as any other card — pronunciation needed a different *input method*, not a different *scheduler*. Resolved 2026-09-16. |
+| D19 | **Leeches announce themselves; they do not disappear** | Anki's rule ported exactly (`leech_threshold_met`, rslib/src/scheduler/states/review.rs), including the half-threshold repeat most reimplementations drop: it fires at the threshold and every half-threshold after, because a leech that was unsuspended and still isn't sticking is still a leech. The default action is `'tag'` rather than `'suspend'` — there is no tags table here, so "tag" means the reviewer says so and changes no scheduling. On a shared collection a card that silently vanishes mid-session is worse than one that speaks up. Needs no schema change to work: detection is a pure function of `card_state.lapses`, and the config columns are optional (see `20260917100000_leech_settings.sql`). Resolved 2026-09-17. |
+| D20 | **Undo is a replay, not a saved pre-image** | The operation §4.3 was written for. Undo deletes the review from the log and folds what remains; nothing stores "what the card looked like before". The restored state is byte-identical rather than approximate, because fuzz is seeded on `(card, reps)` and both wind back with it — pinned by a test that snapshots the row and compares it whole. `suspended` survives an undo, for the same reason it is not part of the fold anywhere else: it is a judgement about the card, not a consequence of how it was answered. Scoped to the caller's own reviews, so undo can never delete a partner's answer to a shared card. Resolved 2026-09-17. |
 
 ### 3.1 Rules inherited from `capybara-bot`
 

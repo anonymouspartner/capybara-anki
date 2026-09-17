@@ -79,6 +79,7 @@ const titleEl = document.getElementById("title");
 const backBtn = document.getElementById("back-btn");
 const scanLink = document.getElementById("scan-link");
 const statsStrip = document.getElementById("stats-strip");
+const noticeEl = document.getElementById("notice");
 
 const state = {
   view: "decks", // "decks" | "review"
@@ -89,6 +90,10 @@ const state = {
   revealed: false,
   editing: false,
   sessionCount: 0,
+  // The last answer given in this session: { note, index, reviewId, queued }.
+  // Undo needs the note object and the queue slot it came out of, and needs to
+  // know whether the answer reached the server at all (see undoLast).
+  lastAnswered: null,
   // D18 (pronunciation notes): "idle" | "recording" | "scoring" | "scored".
   recording: "idle",
   pronunciationResult: null, // { transcript, similarity, bucket, rating } | { error } | null
@@ -129,6 +134,10 @@ async function showDeckList() {
   scanLink.hidden = false;
   titleEl.textContent = "Capybara";
   statsStrip.hidden = true;
+  // The notice describes an answer inside a deck session; leaving the deck ends
+  // that session, and `lastAnswered` holds a queue slot that no longer exists.
+  state.lastAnswered = null;
+  hideNotice();
 
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;
   try {
@@ -184,6 +193,8 @@ async function enterDeck(deck) {
   state.index = 0;
   state.revealed = false;
   state.editing = false;
+  state.lastAnswered = null;
+  hideNotice();
   backBtn.hidden = false;
   scanLink.hidden = true;
   titleEl.textContent = deck;
@@ -377,12 +388,77 @@ async function saveEdit(note) {
   renderReview();
 }
 
+const RATING_NAMES = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
+
+function hideNotice() {
+  noticeEl.hidden = true;
+  noticeEl.className = "";
+  noticeEl.innerHTML = "";
+}
+
+/** The one-line report of what was just recorded, and the way back from it.
+ *
+ * Deliberately not auto-dismissing on a timer: the whole reason to read it is to
+ * notice you tapped the wrong button, and a toast that vanishes after three
+ * seconds is exactly the thing a person looking down at a keyboard misses. It
+ * clears when the next answer replaces it, or when Undo is taken. */
+function showNotice(text, { leech = false, undo = null } = {}) {
+  noticeEl.hidden = false;
+  noticeEl.className = leech ? "leech" : "";
+  noticeEl.innerHTML = `<span class="notice-text"></span>${undo ? `<button id="undo-btn">Undo</button>` : ""}`;
+  // textContent, not innerHTML: a leech notice names the card, and card content
+  // is user data that must never be parsed as markup.
+  noticeEl.querySelector(".notice-text").textContent = text;
+  if (undo) document.getElementById("undo-btn").addEventListener("click", undo);
+}
+
+/** Takes back the last answer, server-side, and puts the card back in front of
+ * you. The server rebuilds the card from its remaining review log, so what comes
+ * back is the card exactly as it was — this side only has to restore the queue
+ * position it was pulled from. */
+async function undoLast() {
+  const last = state.lastAnswered;
+  if (!last) return;
+  state.lastAnswered = null;
+  try {
+    if (last.queued) {
+      // The answer never reached the server — it is sitting in the local outbox.
+      // Undo here means dropping it from that queue, not asking the server to
+      // delete a review it has never seen.
+      await offline.removePendingReview(last.reviewId);
+    } else {
+      await api("/sync/undo", {
+        method: "POST",
+        body: JSON.stringify({ noteId: last.note.id, cardKind: last.note.cardKind }),
+      });
+    }
+  } catch (e) {
+    showNotice("Couldn't undo that — it may already be synced from another device.");
+    console.error(e);
+    return;
+  }
+  hideNotice();
+  state.sessionCount = Math.max(0, state.sessionCount - 1);
+  // Put it back where it was taken from, unrevealed, so undo lands you on the
+  // card you meant to answer rather than somewhere else in the queue. Its
+  // interval previews came from the state the server has just restored, so they
+  // are correct again by construction.
+  state.queue.splice(last.index, 0, last.note);
+  state.index = last.index;
+  state.revealed = false;
+  state.editing = false;
+  renderReview();
+  refreshStatsStrip().catch((e) => console.error("stats strip refresh failed", e));
+}
+
 async function submitRating(rating) {
   const note = currentNote();
-  await api("/sync/review", {
+  const index = state.index;
+  const reviewId = crypto.randomUUID();
+  const result = await api("/sync/review", {
     method: "POST",
     body: JSON.stringify({
-      reviewId: crypto.randomUUID(),
+      reviewId,
       noteId: note.id,
       cardKind: note.cardKind,
       rating,
@@ -390,6 +466,14 @@ async function submitRating(rating) {
     }),
   });
   state.sessionCount++;
+  state.lastAnswered = { note, index, reviewId, queued: result?.queued === true };
+  // `leech` is only present from a server new enough to send it; older ones
+  // simply fall through to the plain notice.
+  if (result?.leech) {
+    showNotice(`"${note.lemma}" keeps being forgotten — it's a leech now.`, { leech: true, undo: undoLast });
+  } else {
+    showNotice(RATING_NAMES[rating] ?? "Recorded", { undo: undoLast });
+  }
   // Show the next card now. The deck counts above it are worth refreshing, but
   // they are not worth waiting for: /sync/decks recomputes every deck's due
   // buckets and was measured at 3-4 seconds, which used to sit between the tap

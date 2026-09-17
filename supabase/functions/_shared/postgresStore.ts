@@ -30,17 +30,31 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import { cardKey } from "../../../src/review/store.ts";
 import type { Store } from "../../../src/review/store.ts";
 import { ankiDayKey, DEFAULT_ROLLOVER_HOUR, type DayBoundary } from "../../../src/review/day.ts";
+import {
+  DEFAULT_LEECH_ACTION,
+  DEFAULT_LEECH_THRESHOLD,
+  type LeechAction,
+} from "../../../src/review/leech.ts";
 import type {
   CardKind,
   CardStateRow,
   DailyCounts,
   DueCandidate,
+  DueItem,
   NewNote,
   NoteRow,
   ReviewRow,
   SchedulerConfigRow,
   StateCounts,
 } from "../../../src/review/types.ts";
+
+/** The three columns getDailyCounts needs out of a review; named because the
+ * recent-window memo stores a list of them. */
+interface RecentReview {
+  note_id: string;
+  card_kind: string;
+  reviewed_at: string;
+}
 
 function noteFromRow(row: Record<string, unknown>): NoteRow {
   return {
@@ -99,6 +113,12 @@ function schedulerConfigFromRow(row: Record<string, unknown>): SchedulerConfigRo
     maxInterval: row.max_interval as number,
     timeZone: (row.time_zone as string | null) ?? null,
     rolloverHour: (row.rollover_hour as number | null) ?? DEFAULT_ROLLOVER_HOUR,
+    // These two read as defaults until the migration adding their columns is
+    // applied: `select *` simply omits a column that doesn't exist yet, so the
+    // nullish fallbacks make the code correct before and after. Same shape the
+    // time_zone/rollover_hour pair used when they were added.
+    leechThreshold: (row.leech_threshold as number | null) ?? DEFAULT_LEECH_THRESHOLD,
+    leechAction: (row.leech_action as LeechAction | null) ?? DEFAULT_LEECH_ACTION,
   };
 }
 
@@ -126,22 +146,61 @@ export class PostgresStore implements Store {
     return out;
   }
 
+  /**
+   * Request-scoped memos. `sync/index.ts` constructs one `PostgresStore` per
+   * request and throws it away, so "cached for the life of this object" means
+   * "cached for the life of this request" — long enough to stop asking the same
+   * question repeatedly while answering one, too short to ever serve a stale
+   * config to a later one.
+   *
+   * That lifetime is load-bearing, not incidental: a store hoisted to module
+   * scope would start serving one request's scheduler config to the next, so if
+   * `getStore()` ever stops being per-request these have to go with it.
+   *
+   * What they save is real. `getDeckSummaries` fans out over the deck list, and
+   * every branch of that fan-out independently re-resolved the user's learning
+   * language and re-read their scheduler config: five decks meant eleven
+   * identical lookups, plus one 48-hour review-window scan per deck of the same
+   * rows.
+   */
+  private readonly languageMemo = new Map<string, Promise<"uk" | "en">>();
+  private readonly configMemo = new Map<string, Promise<SchedulerConfigRow>>();
+  private readonly recentReviewsMemo = new Map<string, Promise<RecentReview[]>>();
+  private readonly startedEarlierMemo = new Map<string, Promise<Set<string>>>();
+
   constructor(supabaseUrl: string, serviceRoleKey: string) {
     this.client = createClient(supabaseUrl, serviceRoleKey);
+  }
+
+  /** Memoizes the promise, not the resolved value, so concurrent callers (the
+   * `Promise.all` fan-outs above this layer) share one in-flight query instead
+   * of each starting their own before the first resolves. A rejected lookup is
+   * evicted so a transient failure isn't cached for the rest of the request. */
+  private memo<T>(cache: Map<string, Promise<T>>, key: string, run: () => Promise<T>): Promise<T> {
+    const existing = cache.get(key);
+    if (existing) return existing;
+    const started = run().catch((e) => {
+      cache.delete(key);
+      throw e;
+    });
+    cache.set(key, started);
+    return started;
   }
 
   /** D2's access rule made concrete: which `anki_notes.language` this user is
    * allowed to see, read off capybara-bot's own `users` table (D4 — same project,
    * no parallel identity system). */
-  private async learningLanguage(userId: string): Promise<"uk" | "en"> {
-    const { data, error } = await this.client
-      .from("users")
-      .select("learning_language")
-      .eq("id", userId)
-      .maybeSingle();
-    if (error) throw new Error(`learningLanguage: ${error.message}`);
-    if (!data) throw new Error(`no user row for ${userId}`);
-    return data.learning_language as "uk" | "en";
+  private learningLanguage(userId: string): Promise<"uk" | "en"> {
+    return this.memo(this.languageMemo, userId, async () => {
+      const { data, error } = await this.client
+        .from("users")
+        .select("learning_language")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) throw new Error(`learningLanguage: ${error.message}`);
+      if (!data) throw new Error(`no user row for ${userId}`);
+      return data.learning_language as "uk" | "en";
+    });
   }
 
   async getNote(noteId: string): Promise<NoteRow | null> {
@@ -161,15 +220,53 @@ export class PostgresStore implements Store {
     return data ? cardStateFromRow(data) : null;
   }
 
-  async getSchedulerConfig(userId: string): Promise<SchedulerConfigRow> {
-    const { data, error } = await this.client
-      .from("anki_scheduler_config")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (error) throw new Error(`getSchedulerConfig: ${error.message}`);
-    if (!data) throw new Error(`no scheduler_config row for user ${userId}`);
-    return schedulerConfigFromRow(data);
+  /** Every requested note in one query per chunk of ids, rather than one query
+   * per note — see the Store interface for why this exists. Chunked through the
+   * same IN_CHUNK cap as everything else here, because PostgREST renders `.in()`
+   * into the query string and a long enough list fails the request outright. */
+  async getNotes(noteIds: string[]): Promise<Map<string, NoteRow>> {
+    const out = new Map<string, NoteRow>();
+    if (noteIds.length === 0) return out;
+    for (const ids of PostgresStore.chunked(noteIds)) {
+      const { data, error } = await this.client.from("anki_notes").select("*").in("id", ids);
+      if (error) throw new Error(`getNotes: ${error.message}`);
+      for (const row of data ?? []) out.set(row.id as string, noteFromRow(row));
+    }
+    return out;
+  }
+
+  /** Card states for a set of (noteId, cardKind) pairs. Filtering on note_id
+   * alone and discarding the kinds nobody asked for is deliberate: PostgREST has
+   * no clean way to express "these specific pairs," and a note has at most two
+   * card_state rows (D17), so the over-fetch is bounded at 2x and costs one
+   * query instead of one per pair. */
+  async getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>> {
+    const out = new Map<string, CardStateRow>();
+    if (items.length === 0) return out;
+    const wanted = new Set(items.map((i) => cardKey(i.noteId, i.cardKind)));
+    const noteIds = [...new Set(items.map((i) => i.noteId))];
+    for (const ids of PostgresStore.chunked(noteIds)) {
+      const { data, error } = await this.client.from("anki_card_state").select("*").in("note_id", ids);
+      if (error) throw new Error(`getCardStates: ${error.message}`);
+      for (const row of data ?? []) {
+        const key = cardKey(row.note_id as string, row.card_kind as CardKind);
+        if (wanted.has(key)) out.set(key, cardStateFromRow(row));
+      }
+    }
+    return out;
+  }
+
+  getSchedulerConfig(userId: string): Promise<SchedulerConfigRow> {
+    return this.memo(this.configMemo, userId, async () => {
+      const { data, error } = await this.client
+        .from("anki_scheduler_config")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (error) throw new Error(`getSchedulerConfig: ${error.message}`);
+      if (!data) throw new Error(`no scheduler_config row for user ${userId}`);
+      return schedulerConfigFromRow(data);
+    });
   }
 
   async createNote(note: NewNote): Promise<string> {
@@ -252,6 +349,28 @@ export class PostgresStore implements Store {
     return candidates;
   }
 
+  /** The user's reviews inside a recent window, paged and memoized. Splitting
+   * this out of getDailyCounts is what lets the per-deck fan-out share one read
+   * of the window instead of one per deck. */
+  private recentReviews(userId: string, windowStart: Date): Promise<RecentReview[]> {
+    return this.memo(this.recentReviewsMemo, `${userId}|${windowStart.toISOString()}`, async () => {
+      const recent: RecentReview[] = [];
+      for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+        const { data, error } = await this.client
+          .from("anki_reviews")
+          .select("note_id, card_kind, reviewed_at")
+          .eq("user_id", userId)
+          .gte("reviewed_at", windowStart.toISOString())
+          .order("reviewed_at", { ascending: true })
+          .range(from, from + PostgresStore.PAGE_SIZE - 1);
+        if (error) throw new Error(`getDailyCounts: ${error.message}`);
+        recent.push(...(data ?? []));
+        if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+      }
+      return recent;
+    });
+  }
+
   /**
    * How many new cards and how many reviews this user has already taken today.
    *
@@ -279,19 +398,10 @@ export class PostgresStore implements Store {
     const today = ankiDayKey(now, boundary);
     const windowStart = new Date(now.getTime() - PostgresStore.RECENT_WINDOW_MS);
 
-    const recent: Array<{ note_id: string; card_kind: string; reviewed_at: string }> = [];
-    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
-      const { data, error } = await this.client
-        .from("anki_reviews")
-        .select("note_id, card_kind, reviewed_at")
-        .eq("user_id", userId)
-        .gte("reviewed_at", windowStart.toISOString())
-        .order("reviewed_at", { ascending: true })
-        .range(from, from + PostgresStore.PAGE_SIZE - 1);
-      if (error) throw new Error(`getDailyCounts: ${error.message}`);
-      recent.push(...(data ?? []));
-      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
-    }
+    // Memoized on (user, window): getDeckSummaries asks for counts once per
+    // deck with the same `now`, and the rows are identical every time — only
+    // the deck filter applied below them differs.
+    const recent = await this.recentReviews(userId, windowStart);
     // The common case, and the one that used to cost the most: nothing studied
     // recently, so there is nothing else to ask about.
     if (recent.length === 0) return { newTakenToday: 0, reviewTakenToday: 0 };
@@ -301,19 +411,29 @@ export class PostgresStore implements Store {
     // Which of these cards were already being studied before the window opened.
     // Only their existence matters, so this asks about the touched notes alone
     // rather than reading history wholesale.
-    const startedEarlier = new Set<string>();
-    for (const ids of PostgresStore.chunked(noteIds)) {
-      const { data, error } = await this.client
-        .from("anki_reviews")
-        .select("note_id, card_kind")
-        .eq("user_id", userId)
-        .in("note_id", ids)
-        .lt("reviewed_at", windowStart.toISOString());
-      if (error) throw new Error(`getDailyCounts: ${error.message}`);
-      for (const row of data ?? []) {
-        startedEarlier.add(cardKey(row.note_id as string, row.card_kind as CardKind));
-      }
-    }
+    // Also memoized on (user, window): the note set comes from `recent`, which
+    // is itself shared across the per-deck fan-out, so this answer is identical
+    // for every deck too.
+    const startedEarlier = await this.memo(
+      this.startedEarlierMemo,
+      `${userId}|${windowStart.toISOString()}`,
+      async () => {
+        const found = new Set<string>();
+        for (const ids of PostgresStore.chunked(noteIds)) {
+          const { data, error } = await this.client
+            .from("anki_reviews")
+            .select("note_id, card_kind")
+            .eq("user_id", userId)
+            .in("note_id", ids)
+            .lt("reviewed_at", windowStart.toISOString());
+          if (error) throw new Error(`getDailyCounts: ${error.message}`);
+          for (const row of data ?? []) {
+            found.add(cardKey(row.note_id as string, row.card_kind as CardKind));
+          }
+        }
+        return found;
+      },
+    );
 
     // Scoping to a deck asks which of the touched notes are in it, rather than
     // listing the deck's whole contents — that select was unbounded, and so was
@@ -408,6 +528,35 @@ export class PostgresStore implements Store {
       }
     }
     return { newCount, learningCount, reviewCount, suspendedCount };
+  }
+
+  async getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]> {
+    // One card's history is small by construction (a card answered daily for a
+    // year is 365 rows), so this needs none of the paging the collection-wide
+    // reads above do.
+    const { data, error } = await this.client
+      .from("anki_reviews")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("note_id", noteId)
+      .eq("card_kind", cardKind)
+      .order("reviewed_at", { ascending: true });
+    if (error) throw new Error(`getReviewsForCard: ${error.message}`);
+    return (data ?? []).map(reviewFromRow);
+  }
+
+  async deleteReview(reviewId: string): Promise<void> {
+    const { error } = await this.client.from("anki_reviews").delete().eq("id", reviewId);
+    if (error) throw new Error(`deleteReview: ${error.message}`);
+  }
+
+  async deleteCardState(noteId: string, cardKind: CardKind): Promise<void> {
+    const { error } = await this.client
+      .from("anki_card_state")
+      .delete()
+      .eq("note_id", noteId)
+      .eq("card_kind", cardKind);
+    if (error) throw new Error(`deleteCardState: ${error.message}`);
   }
 
   async insertReview(row: ReviewRow): Promise<void> {

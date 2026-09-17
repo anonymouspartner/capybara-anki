@@ -24,6 +24,12 @@
  *   POST   /sync/review           → { reviewId, noteId, cardKind?, rating, reviewedAt }
  *                                    (cardKind defaults to 'recall' — D17's
  *                                    'spelling' only exists for hasSpelling notes)
+ *                                    Answers { ok, leech } — `leech` true when
+ *                                    this answer pushed the card past the leech
+ *                                    threshold (src/review/leech.ts)
+ *   POST   /sync/undo             → { noteId, cardKind? } — removes this user's
+ *                                    most recent answer to that card and rebuilds
+ *                                    its state from the remaining log (§4.3)
  *   POST   /sync/suspend          → { noteId, cardKind?, suspended }
  *   PATCH  /sync/note/:id         → a partial NoteRow
  *   DELETE /sync/note/:id
@@ -53,6 +59,7 @@ import {
   NotFoundError,
   setSuspended,
   submitReview,
+  undoLastReview,
 } from "../../../src/review/handlers.ts";
 import type { Store } from "../../../src/review/store.ts";
 import { resolveUserIdFromRequest } from "../../../src/auth.ts";
@@ -100,7 +107,7 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
 
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();
-    await submitReview(store, {
+    const result = await submitReview(store, {
       reviewId: body.reviewId,
       noteId: body.noteId,
       // D17: defaults to 'recall' — every note without hasSpelling only ever has
@@ -110,7 +117,14 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
       rating: body.rating,
       reviewedAt: new Date(body.reviewedAt),
     });
-    return json({ ok: true });
+    // `leech` is additive: a client that ignores it behaves exactly as before.
+    return json({ ok: true, leech: result.becameLeech });
+  }
+
+  if (req.method === "POST" && url.pathname === "/sync/undo") {
+    const body = await req.json();
+    const result = await undoLastReview(store, userId, body.noteId, body.cardKind ?? "recall");
+    return json({ ok: true, rating: result.rating });
   }
 
   if (req.method === "POST" && url.pathname === "/sync/suspend") {

@@ -9,8 +9,10 @@ import {
   NotFoundError,
   setSuspended,
   submitReview,
+  undoLastReview,
 } from "./handlers.ts";
-import { InMemoryStore } from "./store.ts";
+import { cardKey, InMemoryStore } from "./store.ts";
+import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD } from "./leech.ts";
 import type { NoteRow, SchedulerConfigRow } from "./types.ts";
 
 const NOW = new Date("2026-09-16T12:00:00Z");
@@ -43,6 +45,8 @@ function seedConfig(store: InMemoryStore, userId: string, overrides: Partial<Sch
     dailyReviewLimit: 200,
     maxInterval: 36500,
     timeZone: null,
+    leechThreshold: DEFAULT_LEECH_THRESHOLD,
+    leechAction: DEFAULT_LEECH_ACTION,
     rolloverHour: 4,
     ...overrides,
   });
@@ -457,4 +461,305 @@ Deno.test("getStats: a streak survives a late-night session that UTC would split
   // Now: 10pm EDT on the 16th — the third session's own study day.
   const stats = await getStats(store, "tim", new Date("2026-09-17T02:00:00Z"));
   assertEquals(stats.currentStreak, 3);
+});
+
+/** A store that counts how many times each read was called, so the queue
+ * endpoint's cost can be asserted rather than assumed. The count is the point:
+ * this endpoint used to issue two reads per due card, which is invisible in
+ * every correctness test and is exactly what made opening a deck slow. */
+class CountingStore extends InMemoryStore {
+  calls: Record<string, number> = {};
+
+  private count(name: string): void {
+    this.calls[name] = (this.calls[name] ?? 0) + 1;
+  }
+
+  override getNote(noteId: string) {
+    this.count("getNote");
+    return super.getNote(noteId);
+  }
+
+  override getCardState(noteId: string, cardKind: Parameters<InMemoryStore["getCardState"]>[1]) {
+    this.count("getCardState");
+    return super.getCardState(noteId, cardKind);
+  }
+
+  override getNotes(noteIds: string[]) {
+    this.count("getNotes");
+    return super.getNotes(noteIds);
+  }
+
+  override getCardStates(items: Parameters<InMemoryStore["getCardStates"]>[0]) {
+    this.count("getCardStates");
+    return super.getCardStates(items);
+  }
+}
+
+Deno.test("getDueQueueWithPreviews reads in batches, not once per card", async () => {
+  const store = new CountingStore();
+  seedConfig(store, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  for (let i = 0; i < 40; i++) seedNote(store, `n${i}`, { lemma: `word${i}` });
+
+  const cards = await getDueQueueWithPreviews(store, "u1", NOW);
+
+  assertEquals(cards.length, 40, "every seeded card should be offered");
+  // The whole point: constant, not proportional to the queue.
+  assertEquals(store.calls.getNotes, 1);
+  assertEquals(store.calls.getCardStates, 1);
+  assertEquals(store.calls.getNote ?? 0, 0);
+  assertEquals(store.calls.getCardState ?? 0, 0);
+});
+
+Deno.test("getDueQueueWithPreviews still renders content and previews correctly", async () => {
+  const batched = new CountingStore();
+  seedConfig(batched, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  seedNote(batched, "n1", { lemma: "новий", gloss: "new" });
+  seedNote(batched, "n2", { lemma: "старий", gloss: "old", hasSpelling: true });
+  // A card mid-way through its life, so the preview has real prior state to read
+  // rather than always taking the new-card path.
+  batched.cardStates.set(cardKey("n1", "recall"), {
+    noteId: "n1",
+    cardKind: "recall",
+    due: new Date(NOW.getTime() - 86_400_000),
+    stability: 5,
+    difficulty: 5,
+    state: 2,
+    reps: 3,
+    lapses: 0,
+    lastReview: new Date(NOW.getTime() - 6 * 86_400_000),
+    suspended: false,
+    lastUserId: "u1",
+  });
+
+  const cards = await getDueQueueWithPreviews(batched, "u1", NOW);
+
+  // D17: the hasSpelling note contributes two independently-scheduled cards.
+  assertEquals(cards.length, 3);
+  const spelling = cards.find((c) => c.cardKind === "spelling");
+  assertEquals(spelling?.lemma, "старий");
+  const n1 = cards.find((c) => c.id === "n1")!;
+  assertEquals(n1.gloss, "new");
+  // A review card's four previews must be ordered Again <= Hard <= Good <= Easy;
+  // reading the wrong card's state would break this silently.
+  assertEquals(n1.preview.again.getTime() <= n1.preview.hard.getTime(), true);
+  assertEquals(n1.preview.hard.getTime() <= n1.preview.good.getTime(), true);
+  assertEquals(n1.preview.good.getTime() <= n1.preview.easy.getTime(), true);
+});
+
+Deno.test("getDueQueueWithPreviews skips a note deleted out from under the queue", async () => {
+  const store = new CountingStore();
+  seedConfig(store, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  seedNote(store, "n1");
+  seedNote(store, "n2");
+  // Selected into the queue, then gone before its content is read — the race a
+  // second device deleting a card produces.
+  const items = await getDueQueue(store, "u1", NOW);
+  assertEquals(items.length, 2);
+  store.notes.delete("n2");
+
+  const cards = await getDueQueueWithPreviews(store, "u1", NOW);
+  assertEquals(cards.map((c) => c.id), ["n1"]);
+});
+
+Deno.test("a card that keeps being forgotten is announced as a leech", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "n1");
+
+  // Drive a real card through the scheduler rather than hand-writing lapse
+  // counts: what matters is that the announcement lines up with the lapses FSRS
+  // itself records, not with a number this test made up.
+  let clock = NOW.getTime();
+  const answer = async (rating: 1 | 2 | 3 | 4) => {
+    clock += 86_400_000;
+    const result = await submitReview(store, {
+      reviewId: crypto.randomUUID(),
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "u1",
+      rating,
+      reviewedAt: new Date(clock),
+    });
+    return result.becameLeech;
+  };
+
+  // Get it into review state first — a card failed during its learning steps
+  // has not lapsed, which is Anki's distinction too.
+  await answer(4);
+  await answer(3);
+
+  const announcements: number[] = [];
+  for (let i = 0; i < 20; i++) {
+    if (await answer(1)) {
+      announcements.push(store.cardStates.get(cardKey("n1", "recall"))!.lapses);
+    }
+    await answer(3); // recover, so the next Again is a fresh lapse
+  }
+
+  // Default threshold 8, half-threshold 4: fires at 8, then 12, then 16...
+  assertEquals(announcements.slice(0, 3), [8, 12, 16]);
+  // 'tag' is the default action, so nothing about the card's scheduling moved.
+  assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, false);
+});
+
+Deno.test("the suspend action takes the leech out of rotation", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50, leechThreshold: 1, leechAction: "suspend" });
+  seedNote(store, "n1");
+
+  let clock = NOW.getTime();
+  const answer = async (rating: 1 | 2 | 3 | 4) => {
+    clock += 86_400_000;
+    return await submitReview(store, {
+      reviewId: crypto.randomUUID(),
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "u1",
+      rating,
+      reviewedAt: new Date(clock),
+    });
+  };
+
+  await answer(4);
+  await answer(3);
+  assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, false);
+
+  const result = await answer(1);
+  assertEquals(result.becameLeech, true);
+  assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, true);
+  // And a suspended card is no longer offered.
+  assertEquals((await getDueQueue(store, "u1", new Date(clock + 86_400_000))).length, 0);
+});
+
+Deno.test("a threshold of zero never announces a leech", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50, leechThreshold: 0 });
+  seedNote(store, "n1");
+
+  let clock = NOW.getTime();
+  let announced = false;
+  for (let i = 0; i < 30; i++) {
+    clock += 86_400_000;
+    const r = await submitReview(store, {
+      reviewId: crypto.randomUUID(),
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "u1",
+      rating: i % 2 === 0 ? 1 : 3,
+      reviewedAt: new Date(clock),
+    });
+    announced ||= r.becameLeech;
+  }
+  assertEquals(announced, false);
+});
+
+Deno.test("undo puts the card back exactly where it was", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "n1");
+
+  let clock = NOW.getTime();
+  const answer = async (rating: 1 | 2 | 3 | 4) => {
+    clock += 86_400_000;
+    await submitReview(store, {
+      reviewId: crypto.randomUUID(),
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "u1",
+      rating,
+      reviewedAt: new Date(clock),
+    });
+  };
+
+  await answer(3);
+  await answer(4);
+  await answer(3);
+  // Snapshot the real state, then answer once more and take it back. This is the
+  // whole promise: not "close to", but byte-identical, fuzz included — which
+  // only holds because fuzz is seeded on (card, reps) and reps winds back too.
+  const before = { ...store.cardStates.get(cardKey("n1", "recall"))! };
+
+  await answer(1);
+  const afterAnswer = store.cardStates.get(cardKey("n1", "recall"))!;
+  assertEquals(afterAnswer.lapses, before.lapses + 1);
+
+  const result = await undoLastReview(store, "u1", "n1", "recall");
+  assertEquals(result.rating, 1);
+  assertEquals(store.cardStates.get(cardKey("n1", "recall")), before);
+  // The log itself shrank — undo is the one operation that shortens it.
+  assertEquals((await store.getReviewsForCard("u1", "n1", "recall")).length, 3);
+});
+
+Deno.test("undoing a card's only review makes it new again", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "n1");
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "u1",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+  const result = await undoLastReview(store, "u1", "n1", "recall");
+
+  assertEquals(result.cardState, null);
+  // "Never reviewed" is the absence of a row, not a row of zeros.
+  assertEquals(store.cardStates.has(cardKey("n1", "recall")), false);
+  const queue = await getDueQueue(store, "u1", NOW);
+  assertEquals(queue.length, 1, "it should be offered again as a new card");
+});
+
+Deno.test("undo does not reach across to a partner's answer", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "tim", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedConfig(store, "vika", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "n1");
+
+  await submitReview(store, {
+    reviewId: "r-vika",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "vika",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+
+  // Tim has never answered this card, so there is nothing of his to undo —
+  // Vika's answer must not be what gets deleted.
+  await assertRejects(
+    () => undoLastReview(store, "tim", "n1", "recall"),
+    NotFoundError,
+  );
+  assertEquals((await store.getReviewsForCard("vika", "n1", "recall")).length, 1);
+});
+
+Deno.test("undo takes back the answer but not a suspension", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50, leechThreshold: 1, leechAction: "suspend" });
+  seedNote(store, "n1");
+
+  let clock = NOW.getTime();
+  const answer = async (rating: 1 | 2 | 3 | 4) => {
+    clock += 86_400_000;
+    return await submitReview(store, {
+      reviewId: crypto.randomUUID(),
+      noteId: "n1",
+      cardKind: "recall",
+      userId: "u1",
+      rating,
+      reviewedAt: new Date(clock),
+    });
+  };
+  await answer(4);
+  await answer(3);
+  assertEquals((await answer(1)).becameLeech, true);
+  assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, true);
+
+  await undoLastReview(store, "u1", "n1", "recall");
+  // The answer is taken back; the judgement about the card is not. Suspension is
+  // not part of the fold, here as everywhere else.
+  assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, true);
 });
