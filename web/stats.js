@@ -61,6 +61,10 @@ function render(stats) {
       <span class="stat-label">Total reviews</span>
       <span class="stat-value">${stats.totalReviews}</span>
     </div>
+    <div class="stat-row">
+      <span class="stat-label">Lapses (Again)</span>
+      <span class="stat-value">${stats.lapseCount}</span>
+    </div>
     <div id="chart-title">Last ${stats.reviewsByDay.length} days</div>
     ${renderChart(stats.reviewsByDay)}
     <div id="composition">

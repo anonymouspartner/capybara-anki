@@ -47,6 +47,28 @@ export function successRate(reviews: ReviewRow[]): number | null {
   return retained / reviews.length;
 }
 
+/**
+ * How many reviews were rated Again, all time.
+ *
+ * Exists because `successRate` alone can't answer the question it looks like it
+ * answers: whether there is enough evidence of *forgetting* to personalise the
+ * FSRS weights. Fitting the model needs failures specifically, and a rate hides
+ * how few there are — 98.5% success reads as "excellent" whether it comes from
+ * 56 lapses or 5. Running the real optimiser against this collection at 56
+ * lapses produced weights that scored better on log loss and scheduled a card
+ * 23 years out after five Good answers, because a history with almost no
+ * failures teaches FSRS that nothing is ever forgotten. This count is the number
+ * to watch before trying again.
+ *
+ * Deliberately not the same thing as Anki's per-card `lapses` counter, which
+ * only counts a *review* card failing, not a card failed during its learning
+ * steps. This is every Again, which is the quantity the optimiser actually
+ * trains on.
+ */
+export function lapseCount(reviews: ReviewRow[]): number {
+  return reviews.filter((r) => r.rating === 1).length;
+}
+
 /** Consecutive days with at least one review, walking back from today. Today not
  * having a review yet doesn't break a streak that's still active — only a missed
  * *prior* day does — so the walk starts at yesterday whenever today is still empty. */
@@ -69,6 +91,8 @@ export interface StatsResult {
   successRate: number | null;
   currentStreak: number;
   totalReviews: number;
+  /** All-time count of Again ratings — see `lapseCount`. */
+  lapseCount: number;
   cardCounts: StateCounts;
 }
 
@@ -85,6 +109,7 @@ export function computeStats(
     successRate: successRate(reviews),
     currentStreak: currentStreak(reviews, now, boundary),
     totalReviews: reviews.length,
+    lapseCount: lapseCount(reviews),
     cardCounts,
   };
 }
