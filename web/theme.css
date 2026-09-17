@@ -22,6 +22,9 @@
   --btn-easy: #2471a3;
   --btn-reveal: #3b4a5a;
   --btn-fg: #ffffff;
+  /* AnkiDroid's own type-in-the-answer letter-count hint, magenta in both of
+     its themes — index.html's #spelling-dots. */
+  --type-hint: #c2185b;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -41,6 +44,7 @@
     --btn-easy: #2e6da4;
     --btn-reveal: #38424f;
     --btn-fg: #ffffff;
+    --type-hint: #e56fa8;
   }
 }
 * { box-sizing: border-box; }

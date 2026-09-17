@@ -54,14 +54,24 @@
   }
   #notice .notice-text { flex: 1; min-width: 0; }
 
-  /* Spelling cards (the Capybara+ note type's second template — see
-     renderSpellingReview's own docstring on why there's no letter-count hint
-     here: real Anki has none either, that field doesn't exist). */
+  /* Spelling cards (the Capybara+ note type's second template). */
   #spelling-answer {
     margin: 12px 0 4px;
     font-size: 30px;
     font-weight: 700;
     color: var(--btn-good);
+  }
+  /* The letter-count dots AnkiDroid's own type-in-the-answer widget shows
+     before you type — reviewer chrome, not template content, but real: a
+     screenshot of the actual app is what put this back after an earlier pass
+     removed it as guessed-at UI. Its own token rather than reusing --btn-again
+     — it's a typing hint, not a rating color, and reusing one would tie two
+     unrelated meanings together the moment either needed to change. */
+  #spelling-dots {
+    margin: 18px 0 8px;
+    letter-spacing: 4px;
+    color: var(--type-hint);
+    font-size: 20px;
   }
   #spelling-input {
     width: 100%;
@@ -212,18 +222,16 @@
     cursor: pointer;
     margin-top: 8px;
   }
+  /* Matches the real Capybara+ Spelling template's `.label` exactly (plain
+     uppercase, letter-spaced, no border) — a bordered pill was this app's
+     own invention before a real AnkiDroid screenshot showed there isn't
+     one. */
   .card-kind-badge {
-    /* #card is a flex column with default align-items: stretch — without
-       align-self here this stretches to the card's full width instead of
-       sizing to its own text (caught by a Playwright screenshot showing a
-       full-width pill instead of a small badge). */
-    align-self: center;
-    font-size: 11px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
     color: var(--fg-muted);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 2px 8px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
 </style>
 </head>

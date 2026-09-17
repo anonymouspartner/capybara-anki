@@ -537,21 +537,24 @@ const SPELLING_LANGUAGE_NAMES = { uk: "Ukrainian", en: "English" };
  *   {{example}} (now safe to show whole, unblanked) and {{example_translation}}
  *   again below it.
  *
- * Two things Anki's card does that this can't reproduce natively: the
- * per-letter dot count and the live red/green diff inside the type box are
- * both AnkiDroid reviewer chrome, not template content — no field describes
- * them, so a version of this that showed dots or diffed input was
- * inventing UI Anki itself doesn't have. What this adds instead, deliberately
- * not from the template: a plain "Correct"/"Not quite" verdict against the
- * typed answer. It's shown, not enforced — the four rating buttons are still
- * yours — for the same reason Anki's own type-in-the-answer doesn't force a
- * rating either: an accent typed without the right keyboard layout shouldn't
- * force an Again.
+ * One thing Anki's card does that this can't reproduce natively: the live
+ * red/green diff inside the type box as you type is AnkiDroid reviewer
+ * chrome, not template content — no field describes it. The per-letter dot
+ * count is also reviewer chrome rather than template content, but a real
+ * AnkiDroid screenshot confirms it's still part of "what the card looks
+ * like" — this used to guess it away as invented UI before checking; it
+ * isn't. What this adds beyond that, still not from the template: a plain
+ * "Correct"/"Not quite" verdict against the typed answer, in place of the
+ * live diff this can't do. It's shown, not enforced — the four rating
+ * buttons are still yours — for the same reason Anki's own type-in-the-answer
+ * doesn't force a rating either: an accent typed without the right keyboard
+ * layout shouldn't force an Again.
  */
 function renderSpellingReview(note) {
   const answer = state.spellingAnswer ?? "";
   const languageName = SPELLING_LANGUAGE_NAMES[note.language] ?? "";
   const pos = [note.partOfSpeech, languageName ? `(${languageName})` : ""].filter(Boolean).join(" ");
+  const dots = "· ".repeat(note.lemma.length).trim();
 
   contentEl.innerHTML = `
     <div id="card">
@@ -559,6 +562,7 @@ function renderSpellingReview(note) {
       <div id="lemma">${escapeHtml(note.lemmaTranslation ?? "")}</div>
       ${pos ? `<div class="pos">${escapeHtml(pos)}</div>` : ""}
       ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
+      ${!state.revealed ? `<div id="spelling-dots">${escapeHtml(dots)}</div>` : ""}
 
       ${
         state.revealed
