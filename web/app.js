@@ -376,8 +376,13 @@ async function submitRating(rating) {
     }),
   });
   state.sessionCount++;
-  await refreshStatsStrip();
+  // Show the next card now. The deck counts above it are worth refreshing, but
+  // they are not worth waiting for: /sync/decks recomputes every deck's due
+  // buckets and was measured at 3-4 seconds, which used to sit between the tap
+  // and the next card on every single rating (issue #16). It updates in place
+  // when it lands, a moment after the card is already on screen.
   advance();
+  refreshStatsStrip().catch((e) => console.error("stats strip refresh failed", e));
 }
 
 async function suspendCurrent() {
