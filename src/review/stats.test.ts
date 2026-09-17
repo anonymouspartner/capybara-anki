@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@^1";
-import { computeStats, currentStreak, reviewsByDay, successRate } from "./stats.ts";
+import { computeStats, currentStreak, lapseCount, reviewsByDay, successRate } from "./stats.ts";
 import type { ReviewRow } from "./types.ts";
 import { UTC_MIDNIGHT } from "./day.ts";
 
@@ -83,4 +83,39 @@ Deno.test("computeStats: assembles all four pieces from one review list and the 
   assertEquals(result.currentStreak, 1);
   assertEquals(result.cardCounts, cardCounts);
   assertEquals(result.reviewsByDay.length, 7);
+});
+
+Deno.test("lapseCount: counts only Again ratings", () => {
+  const reviews = [
+    review({ rating: 1 }),
+    review({ rating: 2 }),
+    review({ rating: 3 }),
+    review({ rating: 4 }),
+    review({ rating: 1 }),
+  ];
+  assertEquals(lapseCount(reviews), 2);
+});
+
+Deno.test("lapseCount: zero with no reviews, and zero when nothing was ever failed", () => {
+  assertEquals(lapseCount([]), 0);
+  assertEquals(lapseCount([review({ rating: 3 }), review({ rating: 4 })]), 0);
+});
+
+Deno.test("lapseCount says what successRate can't: how much failure evidence exists", () => {
+  // The reason this field exists. Both collections below sit at 90% success, so
+  // successRate cannot tell them apart — but one has ten failures to learn from
+  // and the other has one, and that difference is what decides whether the FSRS
+  // weights can be personalised at all.
+  const many = [
+    ...Array.from({ length: 90 }, () => review({ rating: 3 })),
+    ...Array.from({ length: 10 }, () => review({ rating: 1 })),
+  ];
+  const few = [
+    ...Array.from({ length: 9 }, () => review({ rating: 3 })),
+    review({ rating: 1 }),
+  ];
+
+  assertEquals(successRate(many), successRate(few));
+  assertEquals(lapseCount(many), 10);
+  assertEquals(lapseCount(few), 1);
 });
