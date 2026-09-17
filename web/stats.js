@@ -3,13 +3,14 @@
 // (streak, success rate, total reviews, a day-by-day activity chart) plus the
 // collection's current state composition.
 
-import { captureTokenFromUrl, getToken } from "./auth.js";
+import { authHeader, captureTokenFromUrl } from "./auth.js";
+import { initTelegram } from "./telegram.js";
 import { API_BASE } from "./config.js";
 
 const contentEl = document.getElementById("content");
 
 async function api(path) {
-  const res = await fetch(API_BASE + path, { headers: { authorization: `Bearer ${getToken()}` } });
+  const res = await fetch(API_BASE + path, { headers: { authorization: authHeader() } });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
   return res.json();
 }
@@ -77,8 +78,9 @@ function render(stats) {
 }
 
 async function main() {
+  initTelegram();
   captureTokenFromUrl();
-  if (!getToken()) {
+  if (!authHeader()) {
     contentEl.innerHTML = `<div id="error">No access token. Open your install link again.</div>`;
     return;
   }

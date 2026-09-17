@@ -109,6 +109,23 @@ export class PostgresStore implements Store {
   // and getReviewsSince's own comments on the live bug this paging fixes.
   private static readonly PAGE_SIZE = 1000;
 
+  /** How far back getDailyCounts looks for reviews that could count toward today.
+   * A study day is at most 24 hours long and the current one began at most 24
+   * hours ago, so 48 hours is a safe superset of "today" under any timezone or
+   * rollover hour, with room to spare across a DST seam. */
+  private static readonly RECENT_WINDOW_MS = 172_800_000;
+
+  /** Cap on ids per `.in(...)` filter. PostgREST puts these in the query string,
+   * and a long enough list makes the request fail outright — that was a real
+   * live failure on this account, see getDueCandidates' own history. */
+  private static readonly IN_CHUNK = 100;
+
+  private static chunked<T>(items: T[], size = PostgresStore.IN_CHUNK): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+    return out;
+  }
+
   constructor(supabaseUrl: string, serviceRoleKey: string) {
     this.client = createClient(supabaseUrl, serviceRoleKey);
   }
@@ -235,55 +252,90 @@ export class PostgresStore implements Store {
     return candidates;
   }
 
+  /**
+   * How many new cards and how many reviews this user has already taken today.
+   *
+   * Reads a bounded recent window, not the whole history. It used to page every
+   * review the user had ever done — 3,804 rows on this account — and
+   * getDeckSummaries calls this once per deck, so a single /sync/decks pulled
+   * that history three times over. Measured at 3-4 seconds, which the reviewer
+   * then blocked on after every rating (issue #16).
+   *
+   * The counting rule is unchanged, and still matches InMemoryStore exactly: a
+   * review counts as "new" iff it is the FIRST review anki_reviews has ever
+   * recorded for its (note_id, card_kind). What changed is how that is
+   * established. Walking the window in order reproduces it for anything that
+   * started inside the window; for anything older, one targeted lookup asks
+   * whether the card has any review before the window at all, and seeds the
+   * seen-set with the answer.
+   */
   async getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
     // Study days, not UTC days (day.ts). Comparing day keys rather than an
     // instant is what keeps this DST-safe — no local wall-clock time is ever
     // converted back into a UTC instant, which is the part that breaks twice a
-    // year. The config round trip is the same one getSchedulerConfig already
-    // makes elsewhere in a request; correctness of the daily limits is worth it.
+    // year.
     const config = await this.getSchedulerConfig(userId);
     const boundary: DayBoundary = { timeZone: config.timeZone, rolloverHour: config.rolloverHour };
     const today = ankiDayKey(now, boundary);
+    const windowStart = new Date(now.getTime() - PostgresStore.RECENT_WINDOW_MS);
 
-    // No live analog of InMemoryStore's `reviewStateAtSubmission` map exists here —
-    // each request is stateless. Instead: a review counts as "new" iff it's the
-    // FIRST review `anki_reviews` (append-only, §4.2) has ever recorded for its
-    // (note_id, card_kind) — exactly the condition InMemoryStore's `priorState ===
-    // null` captures, since that's precisely when no `card_state` row existed yet.
-    // Ordering the user's whole history once and tracking what's been seen so far
-    // reconstructs that without adding a column this schema doesn't have.
-    //
-    // Paged via PAGE_SIZE, not one unbounded select — found live (2026-09-16),
-    // migrating a real ~3,800-review collection: PostgREST caps an unbounded
-    // select at its own server-side max-rows (1000 on this project) regardless of
-    // ORDER BY, so a single select silently returned only the OLDEST 1000 rows —
-    // missing every recent review, which is exactly backwards for "how many has
-    // this user already done today." See getReviewsSince's own comment on the
-    // same bug, hit by the same migration on the same day.
-    const reviews: Array<{ note_id: string; card_kind: string; reviewed_at: string }> = [];
+    const recent: Array<{ note_id: string; card_kind: string; reviewed_at: string }> = [];
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
       const { data, error } = await this.client
         .from("anki_reviews")
         .select("note_id, card_kind, reviewed_at")
         .eq("user_id", userId)
+        .gte("reviewed_at", windowStart.toISOString())
         .order("reviewed_at", { ascending: true })
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
       if (error) throw new Error(`getDailyCounts: ${error.message}`);
-      reviews.push(...(data ?? []));
+      recent.push(...(data ?? []));
       if (!data || data.length < PostgresStore.PAGE_SIZE) break;
     }
+    // The common case, and the one that used to cost the most: nothing studied
+    // recently, so there is nothing else to ask about.
+    if (recent.length === 0) return { newTakenToday: 0, reviewTakenToday: 0 };
 
-    let deckNoteIds: Set<string> | null = null;
-    if (deck !== undefined) {
-      const { data: notes, error: notesErr } = await this.client.from("anki_notes").select("id").eq("deck", deck);
-      if (notesErr) throw new Error(`getDailyCounts: ${notesErr.message}`);
-      deckNoteIds = new Set((notes ?? []).map((n) => n.id as string));
+    const noteIds = [...new Set(recent.map((r) => r.note_id))];
+
+    // Which of these cards were already being studied before the window opened.
+    // Only their existence matters, so this asks about the touched notes alone
+    // rather than reading history wholesale.
+    const startedEarlier = new Set<string>();
+    for (const ids of PostgresStore.chunked(noteIds)) {
+      const { data, error } = await this.client
+        .from("anki_reviews")
+        .select("note_id, card_kind")
+        .eq("user_id", userId)
+        .in("note_id", ids)
+        .lt("reviewed_at", windowStart.toISOString());
+      if (error) throw new Error(`getDailyCounts: ${error.message}`);
+      for (const row of data ?? []) {
+        startedEarlier.add(cardKey(row.note_id as string, row.card_kind as CardKind));
+      }
     }
 
-    const seen = new Set<string>();
+    // Scoping to a deck asks which of the touched notes are in it, rather than
+    // listing the deck's whole contents — that select was unbounded, and so was
+    // one PostgREST max-rows cap away from silently dropping notes.
+    let deckNoteIds: Set<string> | null = null;
+    if (deck !== undefined) {
+      deckNoteIds = new Set<string>();
+      for (const ids of PostgresStore.chunked(noteIds)) {
+        const { data, error } = await this.client
+          .from("anki_notes")
+          .select("id")
+          .in("id", ids)
+          .eq("deck", deck);
+        if (error) throw new Error(`getDailyCounts: ${error.message}`);
+        for (const row of data ?? []) deckNoteIds.add(row.id as string);
+      }
+    }
+
+    const seen = new Set(startedEarlier);
     let newTakenToday = 0;
     let reviewTakenToday = 0;
-    for (const row of reviews ?? []) {
+    for (const row of recent) {
       const key = cardKey(row.note_id as string, row.card_kind as CardKind);
       const isFirstEver = !seen.has(key);
       seen.add(key);

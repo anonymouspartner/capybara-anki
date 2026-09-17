@@ -358,6 +358,31 @@ and `VIKA_TOKEN`. Each install link encodes which user it belongs to, which is h
 app knows who is reviewing without a login screen — see §5, `card_state`/`reviews`
 being scoped by `user_id` resolved from the token, not typed in.
 
+**A second route, added 2026-09-17 (issue #17): Telegram Mini App.** The same pages,
+opened from inside capybara-bot, authenticate with Telegram's signed `initData`
+instead — `Authorization: tma <initData>`, Telegram's own convention. This is a
+different *kind* of credential and is treated as one: the device token is a shared
+secret and gets compared, while `initData` is signed and gets **verified**
+(`src/telegramAuth.ts`), against the algorithm as published rather than remembered.
+Two details there are easy to get subtly wrong and are pinned by tests: the bot token
+is the HMAC *message* and the literal string `WebAppData` is the *key*, and only
+`hash` is excluded from the check string — `signature` stays in, because excluding
+both is the separate Ed25519 third-party flow, not this one.
+
+Nothing is stored for it. Telegram re-issues `initData` on every launch and the server
+rejects anything older than a day, so unlike the device token there is no long-lived
+credential sitting in storage. The Telegram account is mapped to a `users.id` through
+function secrets (`TIM_TELEGRAM_ID`/`VIKA_TELEGRAM_ID` beside the existing
+`TIM_USER_ID`/`VIKA_USER_ID`), keeping identity in configuration and out of code, and
+keeping `src/auth.ts` free of any database dependency. Verifying a signature needs
+`TELEGRAM_BOT_TOKEN` as an HMAC key only — no call is ever made to Telegram's API, so
+this does not make the app a second consumer of that token in the sense capybara-bot's
+CLAUDE.md warns about.
+
+Both routes coexist because one deployment serves both surfaces; when both credentials
+are present, Telegram's wins, since inside Telegram there may well be no device token
+at all and the signed one is the stronger of the two.
+
 ---
 
 ## 5. Data model

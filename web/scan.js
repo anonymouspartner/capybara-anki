@@ -13,7 +13,8 @@
 // time, and sequential processing means deterministic per-photo result ordering
 // with no progress-bar bookkeeping to get right.
 
-import { captureTokenFromUrl, getToken } from "./auth.js";
+import { authHeader, captureTokenFromUrl } from "./auth.js";
+import { initTelegram } from "./telegram.js";
 import { API_BASE } from "./config.js";
 
 const MAX_IMAGE_EDGE = 1568;
@@ -54,7 +55,7 @@ async function scanFile(file) {
   const imageBase64 = await toJpegBase64(file);
   const res = await fetch(API_BASE + "/scan/page", {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
+    headers: { "content-type": "application/json", authorization: authHeader() },
     body: JSON.stringify({ imageBase64, mediaType: "image/jpeg" }),
   });
   const data = await res.json();
@@ -106,7 +107,8 @@ fileInput.addEventListener("change", async () => {
   statusEl.hidden = true;
 });
 
+initTelegram();
 captureTokenFromUrl();
-if (!getToken()) {
+if (!authHeader()) {
   document.body.innerHTML = `<div id="error" style="text-align:center;padding:60px 16px;color:var(--fg-muted)">No access token. Open your install link again.</div>`;
 }

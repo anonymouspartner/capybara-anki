@@ -29,7 +29,7 @@ import { createWhisperClient, transcribeAudio } from "../../../src/pronunciation
 import { scoreAttempt } from "../../../src/pronunciation/score.ts";
 import { TranscriptionError } from "../../../src/pronunciation/types.ts";
 import type { NoteRow } from "../../../src/review/types.ts";
-import { resolveUserId } from "../../../src/auth.ts";
+import { resolveUserIdFromRequest } from "../../../src/auth.ts";
 import { PostgresStore } from "../_shared/postgresStore.ts";
 import { CORS_HEADERS, corsPreflight } from "../_shared/cors.ts";
 
@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
   const preflight = corsPreflight(req);
   if (preflight) return preflight;
 
-  if (!resolveUserId(req)) return json({ error: "unauthorized" }, 401);
+  if (!await resolveUserIdFromRequest(req)) return json({ error: "unauthorized" }, 401);
 
   const apiKey = Deno.env.get("OPENAI_API_KEY");
   if (!apiKey) return json({ error: "pronunciation scoring is not configured" }, 500);
