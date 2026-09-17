@@ -12,6 +12,7 @@ import type {
   CardStateRow,
   DailyCounts,
   DueCandidate,
+  DueItem,
   NewNote,
   NoteRow,
   ReviewRow,
@@ -25,6 +26,23 @@ export interface Store {
   /** D17: a card is `(noteId, cardKind)`, not `noteId` alone — every caller already
    * knows which of a note's (one or two) cards it means before asking. */
   getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null>;
+  /** The same answers as calling `getNote`/`getCardState` once per item, in a
+   * bounded number of round trips instead of one per card.
+   *
+   * These exist because the reviewer's own endpoint was the thing making them
+   * necessary: `getDueQueueWithPreviews` asked for one note and one card state
+   * per due card, so opening a deck with 96 cards due cost 192 sequential
+   * queries inside the edge function before the first card could render. The
+   * per-card methods above stay — a single card is still a single lookup, and
+   * `submitReview` genuinely wants one row — but anything assembling a queue
+   * asks in batches.
+   *
+   * Both return maps rather than arrays so a caller never has to re-associate
+   * results with inputs positionally; a missing id is simply absent, which is
+   * the same "no row" the singular methods express as null. `getCardStates`
+   * keys on `cardKey(noteId, cardKind)` (D17 — a note can have two). */
+  getNotes(noteIds: string[]): Promise<Map<string, NoteRow>>;
+  getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
   /** Inserts a note from an ingestion path (`/scan` today) and returns its
    * generated id. No review step (D10) — the row is immediately reviewable. */
@@ -88,6 +106,25 @@ export class InMemoryStore implements Store {
 
   getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null> {
     return Promise.resolve(this.cardStates.get(cardKey(noteId, cardKind)) ?? null);
+  }
+
+  getNotes(noteIds: string[]): Promise<Map<string, NoteRow>> {
+    const out = new Map<string, NoteRow>();
+    for (const id of noteIds) {
+      const note = this.notes.get(id);
+      if (note) out.set(id, note);
+    }
+    return Promise.resolve(out);
+  }
+
+  getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>> {
+    const out = new Map<string, CardStateRow>();
+    for (const item of items) {
+      const key = cardKey(item.noteId, item.cardKind);
+      const state = this.cardStates.get(key);
+      if (state) out.set(key, state);
+    }
+    return Promise.resolve(out);
   }
 
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow> {

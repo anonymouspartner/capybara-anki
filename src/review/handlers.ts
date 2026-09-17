@@ -17,7 +17,7 @@ import { computeStats, type StatsResult } from "./stats.ts";
 import type { DayBoundary } from "./day.ts";
 import type { CardKind, DueItem, NoteRow, QueueSummary, ReviewInput, SchedulerConfigRow } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
-import type { Store } from "./store.ts";
+import { cardKey, type Store } from "./store.ts";
 
 function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
   return {
@@ -105,19 +105,35 @@ export async function getDueQueueWithPreviews(
   ]);
   const params = toFsrsParams(config);
 
-  const cards = await Promise.all(items.map(async (item) => {
-    const [note, cardState] = await Promise.all([
-      store.getNote(item.noteId),
-      store.getCardState(item.noteId, item.cardKind),
-    ]);
-    if (!note) return null;
-    return {
+  // Two batched reads for the whole queue, not two per card. The per-card
+  // version of this loop was what made opening a deck slow: 96 due cards meant
+  // 192 queries before the first card could render. The queue is already
+  // bounded by the daily limits, so these batches are small by construction.
+  const [notes, cardStates] = await Promise.all([
+    store.getNotes([...new Set(items.map((i) => i.noteId))]),
+    store.getCardStates(items),
+  ]);
+
+  const cards: DueCard[] = [];
+  for (const item of items) {
+    const note = notes.get(item.noteId);
+    // A note that vanished between selecting the queue and reading it (deleted
+    // from another device mid-session) is skipped rather than rendered blank —
+    // same behaviour as the per-card version's null check.
+    if (!note) continue;
+    cards.push({
       ...note,
       cardKind: item.cardKind,
-      preview: previewIntervals(cardState, item.noteId, item.cardKind, now, params),
-    };
-  }));
-  return cards.filter((c): c is DueCard => c !== null);
+      preview: previewIntervals(
+        cardStates.get(cardKey(item.noteId, item.cardKind)) ?? null,
+        item.noteId,
+        item.cardKind,
+        now,
+        params,
+      ),
+    });
+  }
+  return cards;
 }
 
 const DEFAULT_STATS_WINDOW_DAYS = 30;

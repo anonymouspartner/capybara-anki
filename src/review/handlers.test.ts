@@ -10,7 +10,7 @@ import {
   setSuspended,
   submitReview,
 } from "./handlers.ts";
-import { InMemoryStore } from "./store.ts";
+import { cardKey, InMemoryStore } from "./store.ts";
 import type { NoteRow, SchedulerConfigRow } from "./types.ts";
 
 const NOW = new Date("2026-09-16T12:00:00Z");
@@ -457,4 +457,102 @@ Deno.test("getStats: a streak survives a late-night session that UTC would split
   // Now: 10pm EDT on the 16th — the third session's own study day.
   const stats = await getStats(store, "tim", new Date("2026-09-17T02:00:00Z"));
   assertEquals(stats.currentStreak, 3);
+});
+
+/** A store that counts how many times each read was called, so the queue
+ * endpoint's cost can be asserted rather than assumed. The count is the point:
+ * this endpoint used to issue two reads per due card, which is invisible in
+ * every correctness test and is exactly what made opening a deck slow. */
+class CountingStore extends InMemoryStore {
+  calls: Record<string, number> = {};
+
+  private count(name: string): void {
+    this.calls[name] = (this.calls[name] ?? 0) + 1;
+  }
+
+  override getNote(noteId: string) {
+    this.count("getNote");
+    return super.getNote(noteId);
+  }
+
+  override getCardState(noteId: string, cardKind: Parameters<InMemoryStore["getCardState"]>[1]) {
+    this.count("getCardState");
+    return super.getCardState(noteId, cardKind);
+  }
+
+  override getNotes(noteIds: string[]) {
+    this.count("getNotes");
+    return super.getNotes(noteIds);
+  }
+
+  override getCardStates(items: Parameters<InMemoryStore["getCardStates"]>[0]) {
+    this.count("getCardStates");
+    return super.getCardStates(items);
+  }
+}
+
+Deno.test("getDueQueueWithPreviews reads in batches, not once per card", async () => {
+  const store = new CountingStore();
+  seedConfig(store, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  for (let i = 0; i < 40; i++) seedNote(store, `n${i}`, { lemma: `word${i}` });
+
+  const cards = await getDueQueueWithPreviews(store, "u1", NOW);
+
+  assertEquals(cards.length, 40, "every seeded card should be offered");
+  // The whole point: constant, not proportional to the queue.
+  assertEquals(store.calls.getNotes, 1);
+  assertEquals(store.calls.getCardStates, 1);
+  assertEquals(store.calls.getNote ?? 0, 0);
+  assertEquals(store.calls.getCardState ?? 0, 0);
+});
+
+Deno.test("getDueQueueWithPreviews still renders content and previews correctly", async () => {
+  const batched = new CountingStore();
+  seedConfig(batched, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  seedNote(batched, "n1", { lemma: "новий", gloss: "new" });
+  seedNote(batched, "n2", { lemma: "старий", gloss: "old", hasSpelling: true });
+  // A card mid-way through its life, so the preview has real prior state to read
+  // rather than always taking the new-card path.
+  batched.cardStates.set(cardKey("n1", "recall"), {
+    noteId: "n1",
+    cardKind: "recall",
+    due: new Date(NOW.getTime() - 86_400_000),
+    stability: 5,
+    difficulty: 5,
+    state: 2,
+    reps: 3,
+    lapses: 0,
+    lastReview: new Date(NOW.getTime() - 6 * 86_400_000),
+    suspended: false,
+    lastUserId: "u1",
+  });
+
+  const cards = await getDueQueueWithPreviews(batched, "u1", NOW);
+
+  // D17: the hasSpelling note contributes two independently-scheduled cards.
+  assertEquals(cards.length, 3);
+  const spelling = cards.find((c) => c.cardKind === "spelling");
+  assertEquals(spelling?.lemma, "старий");
+  const n1 = cards.find((c) => c.id === "n1")!;
+  assertEquals(n1.gloss, "new");
+  // A review card's four previews must be ordered Again <= Hard <= Good <= Easy;
+  // reading the wrong card's state would break this silently.
+  assertEquals(n1.preview.again.getTime() <= n1.preview.hard.getTime(), true);
+  assertEquals(n1.preview.hard.getTime() <= n1.preview.good.getTime(), true);
+  assertEquals(n1.preview.good.getTime() <= n1.preview.easy.getTime(), true);
+});
+
+Deno.test("getDueQueueWithPreviews skips a note deleted out from under the queue", async () => {
+  const store = new CountingStore();
+  seedConfig(store, "u1", { dailyNewLimit: 100, dailyReviewLimit: 100 });
+  seedNote(store, "n1");
+  seedNote(store, "n2");
+  // Selected into the queue, then gone before its content is read — the race a
+  // second device deleting a card produces.
+  const items = await getDueQueue(store, "u1", NOW);
+  assertEquals(items.length, 2);
+  store.notes.delete("n2");
+
+  const cards = await getDueQueueWithPreviews(store, "u1", NOW);
+  assertEquals(cards.map((c) => c.id), ["n1"]);
 });
