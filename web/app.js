@@ -516,54 +516,49 @@ function advance() {
   renderReview();
 }
 
-/** Blanks `word` out of `sentence`, matching it as a WHOLE word.
- *
- * JavaScript's \b is ASCII-only and cannot be used here: a Cyrillic "довго"
- * would match inside "довгого" and blank only the stem, leaking "го" into the
- * prompt. The lookarounds use \p{L} (any letter) instead. Returns null when the
- * word isn't present as a standalone token, so the caller shows the sentence
- * whole rather than a half-blanked one.
- *
- * The same rule capybara-bot applies when it builds a grammar card, kept
- * deliberately identical so a blank looks the same wherever it appears. */
-function blankWord(sentence, word) {
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  let re;
-  try {
-    re = new RegExp(`(?<!\\p{L})${escaped}(?!\\p{L})`, "u");
-  } catch {
-    return null;
-  }
-  return re.test(sentence) ? sentence.replace(re, "_____") : null;
-}
+/** `uk`/`en` → the word the real `Capybara+` note type's front template
+ * splices into `{{part_of_speech}}<span id="lang"></span>` via its own inline
+ * script (`m={uk:"Ukrainian",en:"English"}`). Kept identical so the two
+ * languages this app ever has (capybara-bot's whole scope) read the same way
+ * here as they did in AnkiDroid. */
+const SPELLING_LANGUAGE_NAMES = { uk: "Ukrainian", en: "English" };
 
 /**
  * A spelling card: produce the word rather than recognise it.
  *
- * This is the `Capybara+` note type's second template, and until now the app
- * rendered it exactly like the recall card — the answer printed on the front,
- * which makes the exercise meaningless. AnkiDroid asks you to type it, so this
- * does too, down to the row of dots showing how many letters are coming.
+ * This is the `Capybara+` note type's second template — read directly off a
+ * real export's card templates rather than guessed, front and back:
  *
- * Grading is shown, not enforced: the typed answer is compared to the lemma and
- * marked, but the four rating buttons are still yours. That matches how the rest
- * of this reviewer works (and how Anki's own type-in-the-answer behaves) — the
- * comparison is information, not a verdict, because an accent typed without a
- * keyboard layout shouldn't force an Again.
+ *   Front: {{lemma_translation}} (the "meaning"), {{part_of_speech}} plus the
+ *   language name, then {{example_translation}} as the clue — the TRANSLATED
+ *   example, not the target-language one, so the prompt never leaks the word
+ *   being spelled — and Anki's own {{type:lemma}} entry field.
+ *   Back: {{FrontSide}}, a divider, {{lemma}} itself, then the real
+ *   {{example}} (now safe to show whole, unblanked) and {{example_translation}}
+ *   again below it.
+ *
+ * Two things Anki's card does that this can't reproduce natively: the
+ * per-letter dot count and the live red/green diff inside the type box are
+ * both AnkiDroid reviewer chrome, not template content — no field describes
+ * them, so a version of this that showed dots or diffed input was
+ * inventing UI Anki itself doesn't have. What this adds instead, deliberately
+ * not from the template: a plain "Correct"/"Not quite" verdict against the
+ * typed answer. It's shown, not enforced — the four rating buttons are still
+ * yours — for the same reason Anki's own type-in-the-answer doesn't force a
+ * rating either: an accent typed without the right keyboard layout shouldn't
+ * force an Again.
  */
 function renderSpellingReview(note) {
   const answer = state.spellingAnswer ?? "";
-  const dots = "· ".repeat(note.lemma.length).trim();
-  // Hide the word inside its own example, or the prompt gives it away.
-  const example = note.example ? (blankWord(note.example, note.lemma) ?? note.example) : "";
+  const languageName = SPELLING_LANGUAGE_NAMES[note.language] ?? "";
+  const pos = [note.partOfSpeech, languageName ? `(${languageName})` : ""].filter(Boolean).join(" ");
 
   contentEl.innerHTML = `
     <div id="card">
       <div class="card-kind-badge">Spell the word for</div>
-      <div id="lemma">${escapeHtml(note.lemmaTranslation || note.gloss || "")}</div>
-      <div class="pos">${[note.partOfSpeech, note.language].filter(Boolean).join(" · ")}</div>
-      ${example ? `<div class="example">${escapeHtml(example)}</div>` : ""}
-      <div id="spelling-dots">${escapeHtml(dots)}</div>
+      <div id="lemma">${escapeHtml(note.lemmaTranslation ?? "")}</div>
+      ${pos ? `<div class="pos">${escapeHtml(pos)}</div>` : ""}
+      ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
 
       ${
         state.revealed
@@ -573,8 +568,9 @@ function renderSpellingReview(note) {
                  ${spellingIsCorrect(answer, note.lemma) ? "Correct" : "Not quite"}
                </div>
                ${answer ? `<div class="spelling-typed">You typed: ${escapeHtml(answer)}</div>` : ""}
-               <div id="lemma">${escapeHtml(note.lemma)}</div>
-               ${note.gloss ? `<div class="gloss">${escapeHtml(note.gloss)}</div>` : ""}
+               <div id="spelling-answer">${escapeHtml(note.lemma)}</div>
+               ${note.example ? `<div class="example">${escapeHtml(note.example)}</div>` : ""}
+               ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
              </div>`
           : `<input id="spelling-input" type="text" autocomplete="off" autocapitalize="off"
                     autocorrect="off" spellcheck="false" placeholder="Type answer"
