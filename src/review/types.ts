@@ -24,6 +24,29 @@ import type { LeechAction } from "./leech.ts";
  * `NoteRow.hasSpelling`. */
 export type CardKind = "recall" | "spelling";
 
+/**
+ * The deck a *spelling* card lives in.
+ *
+ * Anki puts it there too, and that is the point: the `Capybara+` note type's
+ * second template is pinned to the `Capybara::Spelling` deck, so a note's recall
+ * card and its spelling card sit in **different decks** — confirmed against a
+ * real export (244 cards under `Capybara::Spelling`, template #1). This app
+ * originally derived a card's deck from its *note*, which quietly folded every
+ * spelling card into Ukrainian or English and made the Spelling deck disappear
+ * from a list that otherwise matched AnkiDroid's exactly.
+ *
+ * A constant rather than a column: `anki_notes.deck` describes the note, and a
+ * note has only ever one of these cards, so "which deck is this card in" is a
+ * pure function of `(note.deck, cardKind)` and needs nothing stored.
+ */
+export const SPELLING_DECK = "Spelling";
+
+/** Which deck a given card of a note belongs to. The one place that mapping
+ * lives, so the deck list, the queue and the daily counts cannot disagree. */
+export function deckOfCard(noteDeck: string, cardKind: CardKind): string {
+  return cardKind === "spelling" ? SPELLING_DECK : noteDeck;
+}
+
 /** D18: what kind of thing a note is, for the reviewer UI's sake — not a
  * different table, since a real export's `Capybara Pronunciation (shadowing)`
  * note type's fields map directly onto the existing vocabulary columns
