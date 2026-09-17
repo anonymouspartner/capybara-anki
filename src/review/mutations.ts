@@ -15,6 +15,7 @@
  */
 
 import { applyReview, type CardSeed } from "../fsrs/replay.ts";
+import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD, isLeechAt, type LeechAction } from "./leech.ts";
 import type { FsrsCardState, FsrsSchedulerParams } from "../fsrs/types.ts";
 import type { CardKind, CardStateRow, NoteRow, ReviewInput, ReviewRow } from "./types.ts";
 
@@ -95,11 +96,22 @@ export function mergeCardState(
  * have offered in the first place, but a stale client tab could still submit for)
  * does not implicitly unsuspend it.
  */
+export interface LeechPolicy {
+  threshold: number;
+  action: LeechAction;
+}
+
+export const DEFAULT_LEECH_POLICY: LeechPolicy = {
+  threshold: DEFAULT_LEECH_THRESHOLD,
+  action: DEFAULT_LEECH_ACTION,
+};
+
 export function buildReviewMutation(
   current: CardStateRow | null,
   input: ReviewInput,
   params: FsrsSchedulerParams,
-): { reviewRow: ReviewRow; cardStateRow: CardStateRow } {
+  leech: LeechPolicy = DEFAULT_LEECH_POLICY,
+): { reviewRow: ReviewRow; cardStateRow: CardStateRow; becameLeech: boolean } {
   const priorFsrsState = current ? toFsrsCardState(current) : null;
   const nextFsrsState = applyReview(
     priorFsrsState,
@@ -124,6 +136,16 @@ export function buildReviewMutation(
     scheduledDays,
   };
 
+  // Only an answer that actually *added* a lapse can make a card a leech.
+  // Testing the count alone would re-announce on every subsequent Good, since a
+  // card parked at 8 lapses still reads as "at threshold" forever. Anki avoids
+  // this structurally — it only evaluates the rule inside answer_again — and
+  // comparing against the prior count is how that reads here, where one function
+  // handles all four ratings.
+  const priorLapses = priorFsrsState?.lapses ?? 0;
+  const becameLeech = nextFsrsState.lapses > priorLapses &&
+    isLeechAt(nextFsrsState.lapses, leech.threshold);
+
   const cardStateRow = mergeCardState(current, input.noteId, input.cardKind, {
     due: nextFsrsState.due,
     stability: nextFsrsState.stability,
@@ -133,9 +155,14 @@ export function buildReviewMutation(
     lapses: nextFsrsState.lapses,
     lastReview: nextFsrsState.lastReview,
     lastUserId: input.userId,
+    // 'tag' changes no scheduling — the announcement is the whole action (see
+    // leech.ts). Only 'suspend' touches the card, and it never *un*suspends:
+    // `suspended: false` is not written here, so a card suspended by hand stays
+    // that way regardless of what the leech rule says.
+    ...(becameLeech && leech.action === "suspend" ? { suspended: true } : {}),
   });
 
-  return { reviewRow, cardStateRow };
+  return { reviewRow, cardStateRow, becameLeech };
 }
 
 /** Suspend or unsuspend. Creates a `card_state` row from nothing if the note has

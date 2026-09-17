@@ -69,7 +69,19 @@ export interface Store {
    * collection-composition breakdown, independent of what's due today. */
   getCardStateCounts(userId: string): Promise<StateCounts>;
 
+  /** Every review this user has given one card, oldest first — the raw material
+   * for rebuilding its state from scratch (§4.3). Scoped to one card rather than
+   * reusing getReviewsSince, which spans the whole collection. */
+  getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]>;
+
   insertReview(row: ReviewRow): Promise<void>;
+  /** Removes one review. The only caller is undo, and it is the one operation
+   * that legitimately shortens the log rather than appending to it. */
+  deleteReview(reviewId: string): Promise<void>;
+  /** Drops a card's state row entirely — what undoing a card's *only* review
+   * leaves behind, since "never reviewed" is the absence of a row, not a row of
+   * zeros (see types.ts). */
+  deleteCardState(noteId: string, cardKind: CardKind): Promise<void>;
   upsertCardState(row: CardStateRow): Promise<void>;
   updateNote(noteId: string, patch: Partial<Omit<NoteRow, "id">>): Promise<void>;
   deleteNote(noteId: string): Promise<void>;
@@ -217,6 +229,25 @@ export class InMemoryStore implements Store {
       }
     }
     return Promise.resolve({ newCount, learningCount, reviewCount, suspendedCount });
+  }
+
+  getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]> {
+    return Promise.resolve(
+      [...this.reviews.values()]
+        .filter((r) => r.userId === userId && r.noteId === noteId && r.cardKind === cardKind)
+        .sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime()),
+    );
+  }
+
+  deleteReview(reviewId: string): Promise<void> {
+    this.reviews.delete(reviewId);
+    this.reviewStateAtSubmission.delete(reviewId);
+    return Promise.resolve();
+  }
+
+  deleteCardState(noteId: string, cardKind: CardKind): Promise<void> {
+    this.cardStates.delete(cardKey(noteId, cardKind));
+    return Promise.resolve();
   }
 
   insertReview(row: ReviewRow): Promise<void> {

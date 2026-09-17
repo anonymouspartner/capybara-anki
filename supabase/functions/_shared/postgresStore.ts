@@ -30,6 +30,11 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import { cardKey } from "../../../src/review/store.ts";
 import type { Store } from "../../../src/review/store.ts";
 import { ankiDayKey, DEFAULT_ROLLOVER_HOUR, type DayBoundary } from "../../../src/review/day.ts";
+import {
+  DEFAULT_LEECH_ACTION,
+  DEFAULT_LEECH_THRESHOLD,
+  type LeechAction,
+} from "../../../src/review/leech.ts";
 import type {
   CardKind,
   CardStateRow,
@@ -108,6 +113,12 @@ function schedulerConfigFromRow(row: Record<string, unknown>): SchedulerConfigRo
     maxInterval: row.max_interval as number,
     timeZone: (row.time_zone as string | null) ?? null,
     rolloverHour: (row.rollover_hour as number | null) ?? DEFAULT_ROLLOVER_HOUR,
+    // These two read as defaults until the migration adding their columns is
+    // applied: `select *` simply omits a column that doesn't exist yet, so the
+    // nullish fallbacks make the code correct before and after. Same shape the
+    // time_zone/rollover_hour pair used when they were added.
+    leechThreshold: (row.leech_threshold as number | null) ?? DEFAULT_LEECH_THRESHOLD,
+    leechAction: (row.leech_action as LeechAction | null) ?? DEFAULT_LEECH_ACTION,
   };
 }
 
@@ -517,6 +528,35 @@ export class PostgresStore implements Store {
       }
     }
     return { newCount, learningCount, reviewCount, suspendedCount };
+  }
+
+  async getReviewsForCard(userId: string, noteId: string, cardKind: CardKind): Promise<ReviewRow[]> {
+    // One card's history is small by construction (a card answered daily for a
+    // year is 365 rows), so this needs none of the paging the collection-wide
+    // reads above do.
+    const { data, error } = await this.client
+      .from("anki_reviews")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("note_id", noteId)
+      .eq("card_kind", cardKind)
+      .order("reviewed_at", { ascending: true });
+    if (error) throw new Error(`getReviewsForCard: ${error.message}`);
+    return (data ?? []).map(reviewFromRow);
+  }
+
+  async deleteReview(reviewId: string): Promise<void> {
+    const { error } = await this.client.from("anki_reviews").delete().eq("id", reviewId);
+    if (error) throw new Error(`deleteReview: ${error.message}`);
+  }
+
+  async deleteCardState(noteId: string, cardKind: CardKind): Promise<void> {
+    const { error } = await this.client
+      .from("anki_card_state")
+      .delete()
+      .eq("note_id", noteId)
+      .eq("card_kind", cardKind);
+    if (error) throw new Error(`deleteCardState: ${error.message}`);
   }
 
   async insertReview(row: ReviewRow): Promise<void> {

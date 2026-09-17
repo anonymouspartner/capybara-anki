@@ -15,6 +15,8 @@
  * fields a given action actually determines, never wipes the rest.
  */
 
+import type { LeechAction } from "./leech.ts";
+
 /** D17: a `Capybara+` note's real second Anki card, scheduled entirely
  * independently of its recall card (confirmed against a real export — separate
  * `cards` rows, separate revlog history). Every note that isn't `Capybara+` only
@@ -169,6 +171,12 @@ export interface SchedulerConfigRow {
   timeZone: string | null;
   /** Local hour the day rolls over at, 0-23. Anki's default is 4. */
   rolloverHour: number;
+  /** Lapses before a card is called a leech; 0 disables the check. Anki's
+   * default is 8. See leech.ts. */
+  leechThreshold: number;
+  /** What crossing that threshold does. Anki's default, and this one, is to say
+   * so without changing the card's scheduling. */
+  leechAction: LeechAction;
 }
 
 /** What submitting an answer to one card provides — everything the caller (an

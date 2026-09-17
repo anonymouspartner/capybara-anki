@@ -37,6 +37,33 @@
     cursor: pointer;
   }
   .deck-row:hover { background: var(--bg-toolbar); }
+
+  /* The post-answer notice: what was just recorded, and the way back from it.
+     Sits under the toolbar rather than floating over the card, because it must
+     never cover the rating buttons on a short phone screen — the bar at the
+     bottom is the one piece of UI that has to stay reachable at all times. */
+  #notice {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: var(--bg-toolbar);
+    color: var(--fg-muted);
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  #notice .notice-text { flex: 1; min-width: 0; }
+  #notice.leech .notice-text { color: var(--btn-again, #c1554a); font-weight: 600; }
+  #notice button {
+    flex: none;
+    padding: 6px 14px;
+    font-size: 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--fg);
+    cursor: pointer;
+  }
   .deck-name { font-size: 16px; }
   .deck-counts { display: flex; gap: 12px; font-size: 15px; font-variant-numeric: tabular-nums; }
   #session-footer {
@@ -180,6 +207,7 @@
   <a id="scan-link" class="icon-btn" href="./scan.html" hidden>📷</a>
 </div>
 <div id="stats-strip" hidden></div>
+<div id="notice" hidden></div>
 <main id="content"><div id="loading" style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div></main>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script type="module" src="app.js"></script>
