@@ -20,6 +20,7 @@ import type {
   StateCounts,
 } from "./types.ts";
 import { ankiDayKey, type DayBoundary, UTC_MIDNIGHT } from "./day.ts";
+import { deckOfCard, SPELLING_DECK } from "./types.ts";
 
 export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
@@ -155,19 +156,26 @@ export class InMemoryStore implements Store {
   }
 
   getDecks(_userId: string): Promise<string[]> {
-    // The in-memory fixture doesn't model per-user access at all (§9.1's "decks are
-    // disjoint by language" assumption) — tests construct exactly the note set they
-    // want to see. A PostgresStore's version of this method is where per-user
-    // access actually gets enforced.
-    return Promise.resolve([...new Set([...this.notes.values()].map((n) => n.deck))]);
+    // The in-memory fixture doesn't model per-user access at all — tests construct
+    // exactly the note set they want to see.
+    const decks = new Set<string>();
+    for (const note of this.notes.values()) {
+      decks.add(note.deck);
+      // A spelling card lives in its own deck, exactly as Anki pins it — see
+      // SPELLING_DECK. The deck exists iff some note actually has one.
+      if (note.hasSpelling) decks.add(SPELLING_DECK);
+    }
+    return Promise.resolve([...decks]);
   }
 
   getDueCandidates(_userId: string, deck?: string): Promise<DueCandidate[]> {
     const candidates: DueCandidate[] = [];
     for (const note of this.notes.values()) {
-      if (deck !== undefined && note.deck !== deck) continue;
       const cardKinds: CardKind[] = note.hasSpelling ? ["recall", "spelling"] : ["recall"];
       for (const cardKind of cardKinds) {
+        // Scoped on the card's deck, not the note's: a Capybara+ note's recall
+        // card is in Ukrainian while its spelling card is in Spelling.
+        if (deck !== undefined && deckOfCard(note.deck, cardKind) !== deck) continue;
         const state = this.cardStates.get(cardKey(note.id, cardKind));
         candidates.push({
           noteId: note.id,
@@ -195,7 +203,10 @@ export class InMemoryStore implements Store {
     for (const review of this.reviews.values()) {
       if (review.userId !== userId) continue;
       if (ankiDayKey(review.reviewedAt, boundary) !== today) continue;
-      if (deck !== undefined && this.notes.get(review.noteId)?.deck !== deck) continue;
+      if (deck !== undefined) {
+        const noteDeck = this.notes.get(review.noteId)?.deck;
+        if (noteDeck === undefined || deckOfCard(noteDeck, review.cardKind) !== deck) continue;
+      }
       const stateAtSubmission = this.reviewStateAtSubmission.get(review.id);
       if (stateAtSubmission === null || stateAtSubmission === 0 || stateAtSubmission === undefined) {
         newTakenToday++;

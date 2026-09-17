@@ -53,6 +53,33 @@
     border-bottom: 1px solid var(--border);
   }
   #notice .notice-text { flex: 1; min-width: 0; }
+
+  /* Spelling cards (the Capybara+ note type's second template). The dots show
+     how many letters are coming, the way AnkiDroid's own spelling card does —
+     enough of a hint to make a long word answerable without giving it away. */
+  #spelling-dots {
+    margin: 18px 0 8px;
+    letter-spacing: 4px;
+    color: var(--btn-again);
+    font-size: 20px;
+  }
+  #spelling-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 12px;
+    padding: 10px 12px;
+    font-size: 20px;
+    color: var(--fg);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid var(--btn-good);
+    border-radius: 0;
+  }
+  #spelling-input:focus { outline: none; }
+  #spelling-verdict { font-weight: 600; margin-bottom: 4px; }
+  #spelling-verdict.right { color: var(--btn-good); }
+  #spelling-verdict.wrong { color: var(--btn-again); }
+  .spelling-typed { color: var(--fg-muted); font-size: 14px; margin-bottom: 8px; }
   #notice.leech .notice-text { color: var(--btn-again, #c1554a); font-weight: 600; }
   #notice button {
     flex: none;

@@ -763,3 +763,73 @@ Deno.test("undo takes back the answer but not a suspension", async () => {
   // not part of the fold, here as everywhere else.
   assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, true);
 });
+
+Deno.test("a spelling card lives in the Spelling deck, not its note's deck", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "plain", { deck: "Ukrainian", hasSpelling: false });
+  seedNote(store, "both", { deck: "Ukrainian", hasSpelling: true });
+  seedNote(store, "en", { deck: "English", language: "en", hasSpelling: true });
+
+  // The deck list matches what AnkiDroid shows: Spelling is its own row.
+  const decks = await store.getDecks("u1");
+  assertEquals(decks.sort(), ["English", "Spelling", "Ukrainian"]);
+
+  // Ukrainian holds only the recall cards of its notes...
+  const ukrainian = await getDueQueue(store, "u1", NOW, "Ukrainian");
+  assertEquals(ukrainian.map((i) => `${i.noteId}/${i.cardKind}`).sort(), [
+    "both/recall",
+    "plain/recall",
+  ]);
+
+  // ...and Spelling gathers the spelling cards from every note deck.
+  const spelling = await getDueQueue(store, "u1", NOW, "Spelling");
+  assertEquals(spelling.map((i) => `${i.noteId}/${i.cardKind}`).sort(), [
+    "both/spelling",
+    "en/spelling",
+  ]);
+
+  // Unscoped is still everything, and nothing is counted twice.
+  const all = await getDueQueue(store, "u1", NOW);
+  assertEquals(all.length, 5);
+});
+
+Deno.test("deck summaries agree with what pressing into the deck offers", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "a", { deck: "Ukrainian", hasSpelling: true });
+  seedNote(store, "b", { deck: "Ukrainian", hasSpelling: false });
+
+  const summaries = await getDeckSummaries(store, "u1", NOW);
+  for (const summary of summaries) {
+    const queue = await getDueQueue(store, "u1", NOW, summary.deck);
+    assertEquals(
+      summary.newCount + summary.learningCount + summary.reviewCount,
+      queue.length,
+      `${summary.deck}: the row's counts must match the queue it opens`,
+    );
+  }
+  assertEquals(summaries.find((s) => s.deck === "Spelling")?.newCount, 1);
+  assertEquals(summaries.find((s) => s.deck === "Ukrainian")?.newCount, 2);
+});
+
+Deno.test("a spelling answer counts against the Spelling deck's daily limit only", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 1, dailyReviewLimit: 50 });
+  seedNote(store, "a", { deck: "Ukrainian", hasSpelling: true });
+  seedNote(store, "b", { deck: "Ukrainian", hasSpelling: false });
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "a",
+    cardKind: "spelling",
+    userId: "u1",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+
+  // Spelling's one-new-card allowance is spent...
+  assertEquals((await store.getDailyCounts("u1", NOW, "Spelling")).newTakenToday, 1);
+  // ...but Ukrainian's is untouched, because that answer wasn't in Ukrainian.
+  assertEquals((await store.getDailyCounts("u1", NOW, "Ukrainian")).newTakenToday, 0);
+});

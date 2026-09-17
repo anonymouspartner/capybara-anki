@@ -16,14 +16,22 @@
  * translation happens, mirroring `migration/schema.py`'s dataclasses being the one
  * place Anki's own column names get translated on the Python side.
  *
- * **Per-user access has no column of its own to enforce it.** `anki_notes` carries
- * no `user_id` — D2 (docs/DESIGN.md) scopes access by `language` instead, since
- * decks are disjoint by language today (one person's learning_language is the
- * other's native_language, per capybara-bot's own `users` table). `learningLanguage()`
- * below is what makes that real: every method that lists or counts notes for a
- * user resolves their `users.learning_language` first and filters by it. If that
- * assumption ever stops holding (docs/DESIGN.md §5's `anki_card_state` comment
- * already names the escape hatch), this is the one place that needs to change.
+ * **One shared collection, not two.** `anki_notes` carries no `user_id`. This file
+ * used to compensate by filtering every listing to the viewer's
+ * `users.learning_language`, on D2's assumption that decks are disjoint by
+ * language. Measured against the real collection, that assumption cost more than
+ * it bought: 199 English notes existed and the person whose learning language is
+ * `uk` simply could not see the English deck — while the AnkiDroid collection
+ * the two of them actually share showed it to him, which is how the gap was
+ * found. The bot's own help has always said to study "the sub-deck for the
+ * language you're learning, or the parent deck to drill both".
+ *
+ * So the filter is gone and both people see the whole collection, exactly as
+ * AnkiDroid does. The consequence is the one D2 already named: `anki_card_state`
+ * is per *card*, so if both of them study the same card they share its schedule.
+ * `anki_reviews.user_id` still records who answered, which is what makes that
+ * recoverable — §4.3's replay can split a card's state per person if it ever
+ * needs to. Nothing here has to change for that; this comment is the marker.
  */
 
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.108.1";
@@ -35,6 +43,7 @@ import {
   DEFAULT_LEECH_THRESHOLD,
   type LeechAction,
 } from "../../../src/review/leech.ts";
+import { deckOfCard, SPELLING_DECK } from "../../../src/review/types.ts";
 import type {
   CardKind,
   CardStateRow,
@@ -158,12 +167,10 @@ export class PostgresStore implements Store {
    * `getStore()` ever stops being per-request these have to go with it.
    *
    * What they save is real. `getDeckSummaries` fans out over the deck list, and
-   * every branch of that fan-out independently re-resolved the user's learning
-   * language and re-read their scheduler config: five decks meant eleven
-   * identical lookups, plus one 48-hour review-window scan per deck of the same
-   * rows.
+   * every branch of that fan-out independently re-read the user's scheduler
+   * config and re-scanned the same 48-hour review window — one redundant pass
+   * per deck, of identical rows.
    */
-  private readonly languageMemo = new Map<string, Promise<"uk" | "en">>();
   private readonly configMemo = new Map<string, Promise<SchedulerConfigRow>>();
   private readonly recentReviewsMemo = new Map<string, Promise<RecentReview[]>>();
   private readonly startedEarlierMemo = new Map<string, Promise<Set<string>>>();
@@ -185,22 +192,6 @@ export class PostgresStore implements Store {
     });
     cache.set(key, started);
     return started;
-  }
-
-  /** D2's access rule made concrete: which `anki_notes.language` this user is
-   * allowed to see, read off capybara-bot's own `users` table (D4 — same project,
-   * no parallel identity system). */
-  private learningLanguage(userId: string): Promise<"uk" | "en"> {
-    return this.memo(this.languageMemo, userId, async () => {
-      const { data, error } = await this.client
-        .from("users")
-        .select("learning_language")
-        .eq("id", userId)
-        .maybeSingle();
-      if (error) throw new Error(`learningLanguage: ${error.message}`);
-      if (!data) throw new Error(`no user row for ${userId}`);
-      return data.learning_language as "uk" | "en";
-    });
   }
 
   async getNote(noteId: string): Promise<NoteRow | null> {
@@ -292,15 +283,37 @@ export class PostgresStore implements Store {
     return data.id as string;
   }
 
-  async getDecks(userId: string): Promise<string[]> {
-    const language = await this.learningLanguage(userId);
-    const { data, error } = await this.client.from("anki_notes").select("deck").eq("language", language);
-    if (error) throw new Error(`getDecks: ${error.message}`);
-    return [...new Set((data ?? []).map((r) => r.deck as string))];
+  /**
+   * Every deck with at least one card in it.
+   *
+   * Two things this no longer does. It does not filter by the viewer's learning
+   * language: `anki_notes` holds one shared collection, exactly as the couple's
+   * single AnkiDroid collection does, and filtering hid the English deck from
+   * the person looking at an AnkiDroid list that showed it. See the class
+   * docstring on what that means for D2.
+   *
+   * And it reports a `Spelling` deck when any note has a spelling card, because
+   * that is where Anki puts those cards (SPELLING_DECK) — the deck belongs to
+   * the card, not to the note.
+   */
+  async getDecks(_userId: string): Promise<string[]> {
+    const decks = new Set<string>();
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_notes")
+        .select("deck, has_spelling")
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getDecks: ${error.message}`);
+      for (const row of data ?? []) {
+        decks.add(row.deck as string);
+        if (row.has_spelling) decks.add(SPELLING_DECK);
+      }
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
+    return [...decks];
   }
 
-  async getDueCandidates(userId: string, deck?: string): Promise<DueCandidate[]> {
-    const language = await this.learningLanguage(userId);
+  async getDueCandidates(_userId: string, deck?: string): Promise<DueCandidate[]> {
     // A two-step fetch-notes-then-`.in("note_id", noteIds)` query used to sit here.
     // It broke the moment a real account had a few hundred notes: PostgREST renders
     // `.in()` as a literal comma-separated list in the request URL, and a few hundred
@@ -318,10 +331,14 @@ export class PostgresStore implements Store {
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
       let noteQuery = this.client
         .from("anki_notes")
-        .select("id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
-        .eq("language", language)
+        .select("deck, id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
-      if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
+      // Scoping to the Spelling deck cannot filter on anki_notes.deck — that
+      // column says where the *note* lives, and a spelling card lives elsewhere
+      // (SPELLING_DECK). So ask for the notes that have one and let the per-card
+      // filter below do the rest.
+      if (deck === SPELLING_DECK) noteQuery = noteQuery.eq("has_spelling", true);
+      else if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
       const { data, error } = await noteQuery;
       if (error) throw new Error(`getDueCandidates: ${error.message}`);
       notes.push(...(data ?? []));
@@ -336,6 +353,7 @@ export class PostgresStore implements Store {
       const stateByKind = new Map(states.map((s) => [s.card_kind, s]));
       const cardKinds: CardKind[] = note.has_spelling ? ["recall", "spelling"] : ["recall"];
       for (const kind of cardKinds) {
+        if (deck !== undefined && deckOfCard(note.deck as string, kind) !== deck) continue;
         const state = stateByKind.get(kind);
         candidates.push({
           noteId: note.id as string,
@@ -438,17 +456,21 @@ export class PostgresStore implements Store {
     // Scoping to a deck asks which of the touched notes are in it, rather than
     // listing the deck's whole contents — that select was unbounded, and so was
     // one PostgREST max-rows cap away from silently dropping notes.
-    let deckNoteIds: Set<string> | null = null;
+    // Which of the touched notes sit in the requested deck. Asked about the
+    // touched notes alone rather than by listing the deck's whole contents —
+    // that select was unbounded, and so one PostgREST max-rows cap away from
+    // silently dropping notes. The note's own deck is fetched rather than
+    // filtered on, because the card's deck may differ from it (SPELLING_DECK).
+    let deckByNote: Map<string, string> | null = null;
     if (deck !== undefined) {
-      deckNoteIds = new Set<string>();
+      deckByNote = new Map<string, string>();
       for (const ids of PostgresStore.chunked(noteIds)) {
         const { data, error } = await this.client
           .from("anki_notes")
-          .select("id")
-          .in("id", ids)
-          .eq("deck", deck);
+          .select("id, deck")
+          .in("id", ids);
         if (error) throw new Error(`getDailyCounts: ${error.message}`);
-        for (const row of data ?? []) deckNoteIds.add(row.id as string);
+        for (const row of data ?? []) deckByNote.set(row.id as string, row.deck as string);
       }
     }
 
@@ -460,7 +482,11 @@ export class PostgresStore implements Store {
       const isFirstEver = !seen.has(key);
       seen.add(key);
       if (ankiDayKey(new Date(row.reviewed_at as string), boundary) !== today) continue;
-      if (deckNoteIds && !deckNoteIds.has(row.note_id as string)) continue;
+      if (deck !== undefined) {
+        const noteDeck = deckByNote?.get(row.note_id as string);
+        if (noteDeck === undefined) continue;
+        if (deckOfCard(noteDeck, row.card_kind as CardKind) !== deck) continue;
+      }
       if (isFirstEver) newTakenToday++;
       else reviewTakenToday++;
     }
@@ -491,8 +517,9 @@ export class PostgresStore implements Store {
     return rows.map(reviewFromRow);
   }
 
-  async getCardStateCounts(userId: string): Promise<StateCounts> {
-    const language = await this.learningLanguage(userId);
+  async getCardStateCounts(_userId: string): Promise<StateCounts> {
+    // Counts the whole shared collection, matching getDecks — the stats screen
+    // and the deck list have to be talking about the same set of cards.
     // Same fix, same reason, as getDueCandidates above: embed anki_card_state through
     // its FK rather than fetching note ids and re-querying with `.in(noteIds)`, which
     // breaks outright once a real account has a few hundred notes. Paged via
@@ -502,7 +529,6 @@ export class PostgresStore implements Store {
       const { data, error } = await this.client
         .from("anki_notes")
         .select("id, has_spelling, anki_card_state(card_kind, state, suspended)")
-        .eq("language", language)
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
       if (error) throw new Error(`getCardStateCounts: ${error.message}`);
       notes.push(...(data ?? []));

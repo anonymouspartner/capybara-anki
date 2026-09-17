@@ -96,6 +96,9 @@ const state = {
   lastAnswered: null,
   // D18 (pronunciation notes): "idle" | "recording" | "scoring" | "scored".
   recording: "idle",
+  // What has been typed into a spelling card so far, kept in state because every
+  // keystroke can outlive a re-render.
+  spellingAnswer: "",
   pronunciationResult: null, // { transcript, similarity, bucket, rating } | { error } | null
 };
 
@@ -289,9 +292,13 @@ function renderReview() {
     return;
   }
 
+  if (note.cardKind === "spelling") {
+    renderSpellingReview(note);
+    return;
+  }
+
   contentEl.innerHTML = `
     <div id="card">
-      ${note.cardKind === "spelling" ? `<div class="card-kind-badge">Spelling</div>` : ""}
       <div id="lemma">${escapeHtml(note.lemma)}</div>
       <div id="back" class="${state.revealed ? "visible" : ""}">
         <hr class="divider" />
@@ -505,7 +512,137 @@ function advance() {
   state.editing = false;
   state.recording = "idle";
   state.pronunciationResult = null;
+  state.spellingAnswer = "";
   renderReview();
+}
+
+/** Blanks `word` out of `sentence`, matching it as a WHOLE word.
+ *
+ * JavaScript's \b is ASCII-only and cannot be used here: a Cyrillic "довго"
+ * would match inside "довгого" and blank only the stem, leaking "го" into the
+ * prompt. The lookarounds use \p{L} (any letter) instead. Returns null when the
+ * word isn't present as a standalone token, so the caller shows the sentence
+ * whole rather than a half-blanked one.
+ *
+ * The same rule capybara-bot applies when it builds a grammar card, kept
+ * deliberately identical so a blank looks the same wherever it appears. */
+function blankWord(sentence, word) {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let re;
+  try {
+    re = new RegExp(`(?<!\\p{L})${escaped}(?!\\p{L})`, "u");
+  } catch {
+    return null;
+  }
+  return re.test(sentence) ? sentence.replace(re, "_____") : null;
+}
+
+/**
+ * A spelling card: produce the word rather than recognise it.
+ *
+ * This is the `Capybara+` note type's second template, and until now the app
+ * rendered it exactly like the recall card — the answer printed on the front,
+ * which makes the exercise meaningless. AnkiDroid asks you to type it, so this
+ * does too, down to the row of dots showing how many letters are coming.
+ *
+ * Grading is shown, not enforced: the typed answer is compared to the lemma and
+ * marked, but the four rating buttons are still yours. That matches how the rest
+ * of this reviewer works (and how Anki's own type-in-the-answer behaves) — the
+ * comparison is information, not a verdict, because an accent typed without a
+ * keyboard layout shouldn't force an Again.
+ */
+function renderSpellingReview(note) {
+  const answer = state.spellingAnswer ?? "";
+  const dots = "· ".repeat(note.lemma.length).trim();
+  // Hide the word inside its own example, or the prompt gives it away.
+  const example = note.example ? (blankWord(note.example, note.lemma) ?? note.example) : "";
+
+  contentEl.innerHTML = `
+    <div id="card">
+      <div class="card-kind-badge">Spell the word for</div>
+      <div id="lemma">${escapeHtml(note.lemmaTranslation || note.gloss || "")}</div>
+      <div class="pos">${[note.partOfSpeech, note.language].filter(Boolean).join(" · ")}</div>
+      ${example ? `<div class="example">${escapeHtml(example)}</div>` : ""}
+      <div id="spelling-dots">${escapeHtml(dots)}</div>
+
+      ${
+        state.revealed
+          ? `<div id="back" class="visible">
+               <hr class="divider" />
+               <div id="spelling-verdict" class="${spellingIsCorrect(answer, note.lemma) ? "right" : "wrong"}">
+                 ${spellingIsCorrect(answer, note.lemma) ? "Correct" : "Not quite"}
+               </div>
+               ${answer ? `<div class="spelling-typed">You typed: ${escapeHtml(answer)}</div>` : ""}
+               <div id="lemma">${escapeHtml(note.lemma)}</div>
+               ${note.gloss ? `<div class="gloss">${escapeHtml(note.gloss)}</div>` : ""}
+             </div>`
+          : `<input id="spelling-input" type="text" autocomplete="off" autocapitalize="off"
+                    autocorrect="off" spellcheck="false" placeholder="Type answer"
+                    value="${escapeHtml(answer)}" />`
+      }
+
+      <div id="tools-row">
+        <button id="edit">Edit</button>
+        <button id="suspend">Suspend</button>
+        <button id="delete">Delete</button>
+      </div>
+    </div>
+    <div id="answer-bar">
+      ${
+        state.revealed
+          ? (() => {
+              const now = new Date();
+              const p = note.preview;
+              return `<div id="rating-row">
+               <button class="rating-again" data-rating="1"><span class="interval">${formatInterval(p.again, now)}</span><span>Again</span></button>
+               <button class="rating-hard" data-rating="2"><span class="interval">${formatInterval(p.hard, now)}</span><span>Hard</span></button>
+               <button class="rating-good" data-rating="3"><span class="interval">${formatInterval(p.good, now)}</span><span>Good</span></button>
+               <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, now)}</span><span>Easy</span></button>
+             </div>`;
+            })()
+          : `<button id="reveal-btn">Check</button>`
+      }
+    </div>
+  `;
+
+  const input = document.getElementById("spelling-input");
+  if (input) {
+    // Keep the typed text across re-renders, and let Enter check it — on a phone
+    // the keyboard's own go key is the natural way to submit.
+    input.addEventListener("input", () => {
+      state.spellingAnswer = input.value;
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        state.spellingAnswer = input.value;
+        state.revealed = true;
+        renderReview();
+      }
+    });
+    input.focus();
+  }
+  document.getElementById("reveal-btn")?.addEventListener("click", () => {
+    state.spellingAnswer = document.getElementById("spelling-input")?.value ?? "";
+    state.revealed = true;
+    renderReview();
+  });
+  contentEl.querySelectorAll("[data-rating]").forEach((btn) => {
+    btn.addEventListener("click", () => submitRating(Number(btn.dataset.rating)));
+  });
+  document.getElementById("edit").addEventListener("click", () => {
+    state.editing = true;
+    renderReview();
+  });
+  document.getElementById("suspend").addEventListener("click", suspendCurrent);
+  document.getElementById("delete").addEventListener("click", deleteCurrent);
+}
+
+/** Case- and whitespace-insensitive, and blind to the difference between a
+ * combining accent and a precomposed one (NFC) — typing Ukrainian on a phone
+ * keyboard produces either. Everything else counts: this is a spelling card. */
+function spellingIsCorrect(typed, lemma) {
+  const norm = (s) => s.normalize("NFC").trim().toLowerCase();
+  return norm(typed) === norm(lemma);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,13 +664,35 @@ function blobToBase64(blob) {
   });
 }
 
+/** Why a recording could not start, in words that point at the fix.
+ *
+ * "Denied or unavailable" was one message for several very different problems,
+ * which is useless when the answer is "your client is not offering the page a
+ * microphone at all". A Telegram Mini App runs in the client's webview, and a
+ * webview that has not been granted the microphone does not merely refuse — it
+ * often exposes no `navigator.mediaDevices` whatsoever, which is worth saying
+ * plainly rather than blaming a permission the person never saw a prompt for. */
+function microphoneProblem(e) {
+  if (!globalThis.isSecureContext) {
+    return "Recording needs a secure (https) connection.";
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return isTelegramMiniApp()
+      ? "This Telegram client isn't giving the page a microphone. Open the app in a browser to record, or allow the microphone for Telegram in your phone's settings."
+      : "This browser doesn't offer microphone recording.";
+  }
+  if (e?.name === "NotAllowedError") return "Microphone permission was denied.";
+  if (e?.name === "NotFoundError") return "No microphone was found.";
+  return `Couldn't start recording (${e?.name ?? "unknown error"}).`;
+}
+
 async function startRecording() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
     console.error(e);
-    state.pronunciationResult = { error: "Microphone access was denied or unavailable." };
+    state.pronunciationResult = { error: microphoneProblem(e) };
     renderReview();
     return;
   }
@@ -561,6 +720,14 @@ function stopRecording() {
 
 async function stopAndScore() {
   const blob = await stopRecording();
+  // Nothing captured at all — a webview that hands back a silent track produces
+  // this, and Whisper's "empty transcript" error is a confusing way to learn it.
+  if (blob.size === 0) {
+    state.pronunciationResult = { error: "No audio was captured — check the microphone and try again." };
+    state.recording = "idle";
+    renderReview();
+    return;
+  }
   state.recording = "scoring";
   renderReview();
 
