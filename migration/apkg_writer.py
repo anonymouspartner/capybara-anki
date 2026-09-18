@@ -40,7 +40,6 @@ same two raw-SQL operations `reader.py`'s read side already established as safe.
 from __future__ import annotations
 
 import json
-import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
