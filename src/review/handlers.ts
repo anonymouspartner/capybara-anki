@@ -53,7 +53,10 @@ export function dayBoundary(config: SchedulerConfigRow): DayBoundary {
 /** GET the due queue: `(noteId, cardKind)` pairs only, in review order,
  * optionally scoped to one deck. The caller fetches each card's content
  * separately (or the HTTP layer batches it) — this function's job stops at "what
- * order," matching dueQueue.ts's own scope. */
+ * order," matching dueQueue.ts's own scope. `deck` narrows *which cards* are
+ * candidates, but the daily-limit counts themselves are never deck-scoped
+ * (§4.3: one collection-wide budget, not one per deck) — `getDailyCounts`
+ * takes no `deck` argument at all. */
 export async function getDueQueue(
   store: Store,
   userId: string,
@@ -63,7 +66,7 @@ export async function getDueQueue(
   const [candidates, config, counts] = await Promise.all([
     store.getDueCandidates(userId, now, deck),
     store.getSchedulerConfig(userId),
-    store.getDailyCounts(userId, now, deck),
+    store.getDailyCounts(userId, now),
   ]);
   return selectDueQueue(
     candidates,
@@ -80,18 +83,23 @@ export interface DeckSummary extends QueueSummary {
 /** GET the deck-list screen's row set: every deck this user has notes in, each
  * with its own new/learning/review counts. One `getDueCandidates` round trip per
  * deck rather than one big query filtered client-side — simpler to keep correct
- * as `getDailyCounts`/`getDueCandidates` evolve, and there are a handful of decks,
- * not thousands. */
+ * as `getDueCandidates` evolves, and there are a handful of decks, not
+ * thousands. `getDailyCounts` is fetched once, outside the per-deck loop, and
+ * shared across every row's `summarizeDueQueue` call — §4.3's one
+ * collection-wide daily budget has to be the same number no matter which
+ * deck's row is being computed, and asking once is also simply less work than
+ * asking once per deck for an answer that never varied by deck to begin with. */
 export async function getDeckSummaries(store: Store, userId: string, now: Date): Promise<DeckSummary[]> {
-  const [decks, config] = await Promise.all([store.getDecks(userId), store.getSchedulerConfig(userId)]);
+  const [decks, config, counts] = await Promise.all([
+    store.getDecks(userId),
+    store.getSchedulerConfig(userId),
+    store.getDailyCounts(userId, now),
+  ]);
   const limits = { dailyNewLimit: config.dailyNewLimit, dailyReviewLimit: config.dailyReviewLimit };
 
   return Promise.all(
     decks.map(async (deck) => {
-      const [candidates, counts] = await Promise.all([
-        store.getDueCandidates(userId, now, deck),
-        store.getDailyCounts(userId, now, deck),
-      ]);
+      const candidates = await store.getDueCandidates(userId, now, deck);
       return { deck, ...summarizeDueQueue(candidates, limits, counts, now) };
     }),
   );

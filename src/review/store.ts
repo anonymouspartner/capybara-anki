@@ -72,10 +72,14 @@ export interface Store {
    * `DayBoundary` — same reasoning as `getDailyCounts` taking it, and the same
    * per-implementation pattern (see `InMemoryStore`'s below). */
   getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]>;
-  /** Daily new/review counts so far, scoped the same way as `getDueCandidates` —
-   * each deck gets its own daily allowance against the one shared
-   * `scheduler_config` limit, not one allowance split across every deck. */
-  getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts>;
+  /** Daily new/review counts so far, across the whole collection — one shared
+   * daily allowance against `scheduler_config`'s limit, not a separate one per
+   * deck (§4.3, resolved 2026-09-18: matches Anki's own per-collection default
+   * rather than every deck getting its own full allowance). Unlike
+   * `getDueCandidates`, this takes no `deck` parameter — the count that
+   * matters for "how much of today's budget is left" is never scoped to
+   * which deck someone happens to be looking at. */
+  getDailyCounts(userId: string, now: Date): Promise<DailyCounts>;
   /** Every review at or after `since`, across every deck — the stats screen's
    * (step 6) raw material. Callers wanting all-time numbers (streak, success rate)
    * pass a `since` far in the past; a real `PostgresStore` may eventually want a
@@ -229,7 +233,7 @@ export class InMemoryStore implements Store {
     return Promise.resolve(candidates);
   }
 
-  getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
+  getDailyCounts(userId: string, now: Date): Promise<DailyCounts> {
     // Study days, not UTC days — see day.ts. Comparing day keys rather than an
     // instant is what keeps this DST-safe: no local wall-clock time ever has to
     // be converted back into a UTC instant.
@@ -243,10 +247,6 @@ export class InMemoryStore implements Store {
     for (const review of this.reviews.values()) {
       if (review.userId !== userId) continue;
       if (ankiDayKey(review.reviewedAt, boundary) !== today) continue;
-      if (deck !== undefined) {
-        const noteDeck = this.notes.get(review.noteId)?.deck;
-        if (noteDeck === undefined || deckOfCard(noteDeck, review.cardKind) !== deck) continue;
-      }
       const stateAtSubmission = this.reviewStateAtSubmission.get(review.id);
       if (stateAtSubmission === null || stateAtSubmission === 0 || stateAtSubmission === undefined) {
         newTakenToday++;
