@@ -177,10 +177,14 @@ export class PostgresStore implements Store {
    * scope would start serving one request's scheduler config to the next, so if
    * `getStore()` ever stops being per-request these have to go with it.
    *
-   * What they save is real. `getDeckSummaries` fans out over the deck list, and
-   * every branch of that fan-out independently re-read the user's scheduler
-   * config and re-scanned the same 48-hour review window — one redundant pass
-   * per deck, of identical rows.
+   * What they save is real. `getDeckSummaries` fans out over the deck list via
+   * `getDueCandidates`, and every branch of that fan-out independently re-read
+   * the user's scheduler config — one redundant round trip per deck, of an
+   * identical row. `getDailyCounts` used to fan out the same way before §4.3
+   * made daily limits per-collection rather than per-deck; it's called once
+   * per request now, so `recentReviewsMemo`/`startedEarlierMemo` no longer
+   * save a repeat call within a request the way `configMemo` still does — kept
+   * anyway, since a memo with nothing to deduplicate costs nothing.
    */
   private readonly configMemo = new Map<string, Promise<SchedulerConfigRow>>();
   private readonly recentReviewsMemo = new Map<string, Promise<RecentReview[]>>();
@@ -435,9 +439,10 @@ export class PostgresStore implements Store {
     return candidates;
   }
 
-  /** The user's reviews inside a recent window, paged and memoized. Splitting
-   * this out of getDailyCounts is what lets the per-deck fan-out share one read
-   * of the window instead of one per deck. */
+  /** The user's reviews inside a recent window, paged and memoized. Kept as its
+   * own method (rather than inlined into `getDailyCounts`) mostly for
+   * readability now — before §4.3, this was what let the per-deck fan-out
+   * share one read of the window instead of one per deck. */
   private recentReviews(userId: string, windowStart: Date): Promise<RecentReview[]> {
     return this.memo(this.recentReviewsMemo, `${userId}|${windowStart.toISOString()}`, async () => {
       const recent: RecentReview[] = [];
@@ -458,13 +463,19 @@ export class PostgresStore implements Store {
   }
 
   /**
-   * How many new cards and how many reviews this user has already taken today.
+   * How many new cards and how many reviews this user has already taken today,
+   * across the whole collection — one shared budget, not one per deck (§4.3,
+   * resolved 2026-09-18: matches Anki's own per-collection default). A card's
+   * deck plays no part in this count; `dueQueue.ts`'s `categorize` applies the
+   * same collection-wide remaining-slots number no matter which deck someone
+   * is looking at, same as `getDeckSummaries` (handlers.ts) shares one
+   * `getDailyCounts` call across every deck's row instead of asking once per
+   * deck.
    *
    * Reads a bounded recent window, not the whole history. It used to page every
-   * review the user had ever done — 3,804 rows on this account — and
-   * getDeckSummaries calls this once per deck, so a single /sync/decks pulled
-   * that history three times over. Measured at 3-4 seconds, which the reviewer
-   * then blocked on after every rating (issue #16).
+   * review the user had ever done — 3,804 rows on this account. Measured at
+   * 3-4 seconds, which the reviewer then blocked on after every rating
+   * (issue #16).
    *
    * The counting rule is unchanged, and still matches InMemoryStore exactly: a
    * review counts as "new" iff it is the FIRST review anki_reviews has ever
@@ -474,7 +485,7 @@ export class PostgresStore implements Store {
    * whether the card has any review before the window at all, and seeds the
    * seen-set with the answer.
    */
-  async getDailyCounts(userId: string, now: Date, deck?: string): Promise<DailyCounts> {
+  async getDailyCounts(userId: string, now: Date): Promise<DailyCounts> {
     // Study days, not UTC days (day.ts). Comparing day keys rather than an
     // instant is what keeps this DST-safe — no local wall-clock time is ever
     // converted back into a UTC instant, which is the part that breaks twice a
@@ -484,9 +495,6 @@ export class PostgresStore implements Store {
     const today = ankiDayKey(now, boundary);
     const windowStart = new Date(now.getTime() - PostgresStore.RECENT_WINDOW_MS);
 
-    // Memoized on (user, window): getDeckSummaries asks for counts once per
-    // deck with the same `now`, and the rows are identical every time — only
-    // the deck filter applied below them differs.
     const recent = await this.recentReviews(userId, windowStart);
     // The common case, and the one that used to cost the most: nothing studied
     // recently, so there is nothing else to ask about.
@@ -497,9 +505,6 @@ export class PostgresStore implements Store {
     // Which of these cards were already being studied before the window opened.
     // Only their existence matters, so this asks about the touched notes alone
     // rather than reading history wholesale.
-    // Also memoized on (user, window): the note set comes from `recent`, which
-    // is itself shared across the per-deck fan-out, so this answer is identical
-    // for every deck too.
     const startedEarlier = await this.memo(
       this.startedEarlierMemo,
       `${userId}|${windowStart.toISOString()}`,
@@ -521,24 +526,6 @@ export class PostgresStore implements Store {
       },
     );
 
-    // Which of the touched notes sit in the requested deck. Asked about the
-    // touched notes alone rather than by listing the deck's whole contents —
-    // that select was unbounded, and so one PostgREST max-rows cap away from
-    // silently dropping notes. The note's own deck is fetched rather than
-    // filtered on, because the card's deck may differ from it (SPELLING_DECK).
-    let deckByNote: Map<string, string> | null = null;
-    if (deck !== undefined) {
-      deckByNote = new Map<string, string>();
-      for (const ids of PostgresStore.chunked(noteIds)) {
-        const { data, error } = await this.client
-          .from("anki_notes")
-          .select("id, deck")
-          .in("id", ids);
-        if (error) throw new Error(`getDailyCounts: ${error.message}`);
-        for (const row of data ?? []) deckByNote.set(row.id as string, row.deck as string);
-      }
-    }
-
     const seen = new Set(startedEarlier);
     let newTakenToday = 0;
     let reviewTakenToday = 0;
@@ -547,11 +534,6 @@ export class PostgresStore implements Store {
       const isFirstEver = !seen.has(key);
       seen.add(key);
       if (ankiDayKey(new Date(row.reviewed_at as string), boundary) !== today) continue;
-      if (deck !== undefined) {
-        const noteDeck = deckByNote?.get(row.note_id as string);
-        if (noteDeck === undefined) continue;
-        if (deckOfCard(noteDeck, row.card_kind as CardKind) !== deck) continue;
-      }
       if (isFirstEver) newTakenToday++;
       else reviewTakenToday++;
     }

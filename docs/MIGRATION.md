@@ -3,9 +3,9 @@
 **Status: Phase 0.1 done, gate passed. Phase 1 done, live. Phase 2/3's loader is
 built and verified against the real recovery export; the load itself is the one
 step left to a maintainer, since it needs the service-role key (§6.3). Phase 4
-done except 4.3 (daily limits), deliberately deferred. Written 2026-09-18,
-against the live database and two real exports — every number below was
-measured, not estimated. See the Appendix for how to re-measure any of them.**
+done. Phase 5 done. Written 2026-09-18, against the live database and two real
+exports — every number below was measured, not estimated. See the Appendix for
+how to re-measure any of them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -35,10 +35,11 @@ uninstalled**, and the list of things that are not true yet but have to be first
   is no.
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
-- Once the recovery load actually runs, the remaining work is real but bounded:
-  one deferred fidelity decision (daily limits, §3.3) before the cutover itself
-  (Phase 6). The other four fidelity gaps (§3.1, 3.2, 3.4, 3.5) and all four of
-  Phase 5's parity features are done as of 2026-09-18.
+- Once the recovery load actually runs, everything else is done: all five
+  fidelity gaps (§3.1-3.5, including 4.3's per-deck-vs-per-collection daily
+  limit decision) and all four of Phase 5's parity features are complete as of
+  2026-09-18. Phase 6 cutover is what's left, and it depends on the maintainer
+  running Phase 0.2/0.3/3.2 first.
 
 ---
 
@@ -249,12 +250,14 @@ end to end: `FsrsCardState.learningStep` round-trips through `replay.ts`
 ts-fsrs's own default) from a real `[]` (Anki's own "FSRS manages timing"
 convention).
 
-### 3.3 Daily limits are per-deck, not per-collection
+### 3.3 🟢 Daily limits were per-deck, not per-collection — fixed 2026-09-18
 
-`getDailyCounts` scopes each deck's allowance separately, so five decks each get
-40 new / 200 review. Anki gives the collection 40. This is deliberate and
-documented in `store.ts`, and it was harmless while the app was a supplement. At
-full volume it is a 5× difference in how much work a day asks for.
+`getDailyCounts` used to scope each deck's allowance separately, so five decks
+each got 40 new / 200 review. Anki gives the collection 40. That was harmless
+while the app was a supplement; at full volume it was a 5× difference in how
+much work a day asks for. **Fixed:** `getDailyCounts` no longer takes a `deck`
+argument at all — one collection-wide count, shared by every deck's row and
+every deck's queue. See §6.9.
 
 ### 3.4 🟢 The two people have different day boundaries — fixed 2026-09-18
 
@@ -343,13 +346,13 @@ asked for:
 | 3.3 | Reconcile the 2026-09-12 → cutover window. **Already satisfied by construction** — every in-app review since 2026-09-16 has an id `cli.py` cannot reproduce from the Anki export, so `ignore-duplicates` keeps them automatically; there is no separate reconciliation step to write. |
 | 3.4 | **Verify by replay.** Still open, once 3.2 runs: for a sample of cards, fold the merged log and assert the result matches what Anki itself reports. |
 
-### Phase 4 — Fidelity — done except 4.3, 2026-09-18
+### Phase 4 — Fidelity — done, 2026-09-18
 
 | | Work |
 |---|---|
 | 4.1 | Upgrade to an FSRS-6-capable scheduler. **Done** — `ts-fsrs@^5.4`, verified 21-weight default vector. |
 | 4.2 | Wire up or delete `learning_steps`. **Done** — wired up (§3.2); the ts-fsrs upgrade made this the natural extension of 4.1, not a separate change. |
-| 4.3 | Decide per-deck vs per-collection daily limits. **Still open, deliberately deferred.** |
+| 4.3 | Decide per-deck vs per-collection daily limits. **Done, 2026-09-18 — per-collection, matching Anki.** See §3.3 and §6.9. |
 | 4.4 | Set the missing timezone. **Done** — Vika's `time_zone` is now `Europe/Kyiv`. |
 | 4.5 | Apply the leech migration. **Done**, applied live. |
 
@@ -683,6 +686,45 @@ phase's code is correct and tested independent of that — the moment 0.3 runs,
 the very next page load starts caching real files with no further change
 needed — but "real audio actually plays offline on the live app" is,
 necessarily, unverifiable until then.
+
+### 6.9 Phase 4.3 (per-collection daily limits), verified
+
+Resolved: per-collection, matching Anki's own default — one shared daily
+budget, not five independent ones. `Store.getDailyCounts` dropped its `deck`
+parameter outright rather than keeping it as dead functionality; the
+per-deck scoping it used to do lived entirely in that one method (and in
+`PostgresStore`'s matching `deckByNote` lookup, now gone too) — `dueQueue.ts`'s
+`categorize`/`selectDueQueue`/`summarizeDueQueue` never knew or cared which
+scope produced the `counts` they were handed, so nothing there had to change
+at all. `getDeckSummaries` (handlers.ts) now asks for the daily counts once,
+outside its per-deck loop, and shares that one answer across every deck's row
+— simpler than before, not just more correct, since the old per-deck version
+asked the same "how many taken today" question once per deck for an answer
+that (post-4.3) is identical every time.
+
+Two existing tests specifically asserted the old per-deck *isolation*
+("a spelling answer counts against the Spelling deck's daily limit only",
+"a deck's daily new limit is independent of another deck's") — both rewritten
+to assert the new per-collection *sharing* instead, rather than deleted, so
+the behavior this decision actually changed stays pinned by a test either way.
+
+Verified in a real browser (`run` skill) too, and this one caught something
+worth recording: setting the demo's daily new limit to 1 and expecting every
+deck to still show 1 available slot (nothing spent yet) instead showed 0
+everywhere, immediately, before any review. Not a bug — `web/demo-server.ts`
+seeds one review dated essentially "today" for the stats-screen demo
+(`demo-review-0`, `reviewedAt: new Date(Date.now() - 0 * DAY_MS)`), inserted
+directly into the store rather than through `submitReview`, so it carries no
+`reviewStateAtSubmission` entry and reads as a "new" card taken today. Under
+the old per-deck accounting that phantom slot only ever touched Ukrainian
+(demo-3's deck); under per-collection accounting it correctly shows up
+everywhere. Re-ran with the limit at 2 instead of 1 to see both states
+cleanly either side of that one-slot baseline: with 1 of 2 slots already
+"spent" by the phantom, every deck read 1 available; answering the one real
+new card left in Ukrainian's queue (its due queue interleaves a review card
+first, so the test answers up to two cards to be sure the new one is reached)
+dropped every deck to 0. Screenshotted before and after. No console errors
+beyond the same Telegram-script and favicon noise every other run here shows.
 
 ---
 
