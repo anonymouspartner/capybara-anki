@@ -527,6 +527,7 @@ Deno.test("getDueQueueWithPreviews still renders content and previews correctly"
     reps: 3,
     lapses: 0,
     lastReview: new Date(NOW.getTime() - 6 * 86_400_000),
+    learningStep: 0,
     suspended: false,
     lastUserId: "u1",
   });

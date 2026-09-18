@@ -2,7 +2,7 @@ import { assertEquals, assertNotEquals } from "jsr:@std/assert@^1";
 import { buildReviewMutation, buildSuspendMutation, previewIntervals, validateNoteEdit } from "./mutations.ts";
 import type { CardStateRow } from "./types.ts";
 
-const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500 };
+const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500, learningSteps: [1, 10] };
 
 function newCardState(overrides: Partial<CardStateRow> = {}): CardStateRow {
   return {
@@ -15,6 +15,7 @@ function newCardState(overrides: Partial<CardStateRow> = {}): CardStateRow {
     reps: 0,
     lapses: 0,
     lastReview: null,
+    learningStep: 0,
     suspended: false,
     lastUserId: null,
     ...overrides,

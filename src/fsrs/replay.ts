@@ -29,7 +29,17 @@
  */
 
 import { createEmptyCard, FSRS, fsrs, generatorParameters, StrategyMode } from "ts-fsrs";
+import type { StepUnit } from "ts-fsrs";
 import type { FsrsCardState, FsrsSchedulerParams, ReviewEvent } from "./types.ts";
+
+/** `FsrsSchedulerParams.learningSteps` stores plain minutes (matching
+ * `anki_scheduler_config.learning_steps`'s real-Anki shape); ts-fsrs wants
+ * `StepUnit` strings (`"1m"`). Minutes-only because that's the only unit this
+ * app has ever stored or needed — Anki's own step config can express hours/days
+ * too, but nothing here has had a reason to. */
+function toStepUnits(minutes: number[]): StepUnit[] {
+  return minutes.map((m) => `${m}m` as StepUnit);
+}
 
 /**
  * Stable identity for one card, used to seed interval fuzz (see `buildScheduler`).
@@ -58,6 +68,10 @@ function buildScheduler(params: FsrsSchedulerParams, fuzzSeed?: string): FSRS {
       // of the card's stored state, NOT a random draw — §4.3's "card_state is a
       // fold over reviews" still holds, and replay.test.ts asserts exactly that.
       enable_fuzz: fuzzSeed !== undefined,
+      // `null` (never configured) is left out entirely so ts-fsrs's own built-in
+      // default applies; a real `[]` is passed through as-is — see this field's
+      // docstring in types.ts for why those two are not the same thing.
+      ...(params.learningSteps !== null ? { learning_steps: toStepUnits(params.learningSteps) } : {}),
     }),
   );
   if (fuzzSeed !== undefined) {
@@ -102,6 +116,7 @@ function toFsrsCardState(card: {
   reps: number;
   lapses: number;
   last_review?: Date;
+  learning_steps: number;
 }): FsrsCardState {
   return {
     due: card.due,
@@ -114,6 +129,7 @@ function toFsrsCardState(card: {
     // shape without one, and that path never reaches here (applyReviewWith always
     // calls next() first, which stamps last_review onto its result).
     lastReview: card.last_review as Date,
+    learningStep: card.learning_steps,
   };
 }
 
@@ -133,6 +149,7 @@ function toFsrsCard(state: FsrsCardState) {
     last_review: state.lastReview,
     elapsed_days: 0,
     scheduled_days: 0,
+    learning_steps: state.learningStep,
   };
 }
 

@@ -5,10 +5,14 @@ import type { FsrsSchedulerParams, ReviewEvent } from "./types.ts";
 // Matches Tim's real, verified scheduler_config (docs/DESIGN.md §7.3) — an empty
 // fsrsParams array is the actual state of the real collection, not a contrived edge
 // case, so it's the default here rather than something bolted on as an afterthought.
+// learningSteps: [1, 10] is likewise the real, verified value for both users — and
+// happens to equal ts-fsrs's own built-in default (1m, 10m), so every existing
+// assertion below is unaffected by learning_steps now actually being wired through.
 const REAL_PARAMS: FsrsSchedulerParams = {
   fsrsParams: [],
   desiredRetention: 0.9,
   maxInterval: 36500,
+  learningSteps: [1, 10],
 };
 
 function review(reviewedAt: string, rating: ReviewEvent["rating"]): ReviewEvent {
@@ -38,6 +42,52 @@ Deno.test("an empty fsrsParams array works — Anki's 'no personalized weights y
   if (!(result.stability > 0)) {
     throw new Error(`expected empty fsrsParams to still fall back to real defaults, got stability=${result.stability}`);
   }
+});
+
+Deno.test("learningStep is 0 on a fresh card and after graduating to Review", () => {
+  const midLearning = applyReview(null, review("2026-01-01T12:00:00Z", 3), REAL_PARAMS);
+  assertEquals(midLearning.state, 1); // Learning
+  assertEquals(midLearning.learningStep, 1, "one of REAL_PARAMS.learningSteps' two steps completed");
+
+  const graduated = applyReview(midLearning, { reviewedAt: midLearning.due, rating: 3 }, REAL_PARAMS);
+  assertEquals(graduated.state, 2); // Review
+  assertEquals(graduated.learningStep, 0, "resets once a card leaves Learning");
+});
+
+Deno.test("resuming a card mid-steps continues where it left off, not from step 0", () => {
+  // The whole reason FsrsCardState carries learningStep at all (see its
+  // docstring): replayCardState must reach the exact state applyReview reaches
+  // one review at a time, same property the "replaying from scratch agrees..."
+  // tests below assert for every other field. If learningStep didn't round-trip,
+  // a card paused after its first Good (still on step 1 of 2) would look
+  // indistinguishable from brand new on the next review, and get scheduled by
+  // step 1 (10m) again instead of advancing to step 2 and graduating.
+  const reviews = [review("2026-01-01T12:00:00Z", 3), review("2026-01-01T12:10:00Z", 3)];
+  const replayed = replayCardState(reviews, REAL_PARAMS);
+  const incremental = applyReview(
+    applyReview(null, reviews[0], REAL_PARAMS),
+    reviews[1],
+    REAL_PARAMS,
+  );
+  if (replayed === null) throw new Error("expected a card state");
+  assertEquals(replayed.state, incremental.state);
+  assertEquals(replayed.learningStep, incremental.learningStep);
+  assertEquals(replayed.state, 2, "two Goods through a two-step sequence graduates to Review");
+});
+
+Deno.test("learningSteps: [] is Anki's real 'no short-term steps' state — graduates immediately", () => {
+  const params: FsrsSchedulerParams = { ...REAL_PARAMS, learningSteps: [] };
+  const result = applyReview(null, review("2026-01-01T12:00:00Z", 3), params);
+  assertEquals(result.state, 2, "a single Good with no learning steps goes straight to Review");
+});
+
+Deno.test("learningSteps: null falls back to ts-fsrs's own default, not to no-steps", () => {
+  // null (never configured) and a real [] (Anki's own "FSRS manages it" value)
+  // must not be conflated — conflating them would make every not-yet-migrated
+  // user silently behave as if they'd deliberately turned learning steps off.
+  const params: FsrsSchedulerParams = { ...REAL_PARAMS, learningSteps: null };
+  const result = applyReview(null, review("2026-01-01T12:00:00Z", 3), params);
+  assertEquals(result.state, 1, "ts-fsrs's built-in default steps (1m, 10m) still apply");
 });
 
 Deno.test("a lapse (Again) increments lapses and moves the card to Relearning", () => {
@@ -158,8 +208,15 @@ Deno.test("fuzz spreads cards answered together across different days", () => {
   // cards comes back as one lump on one day, then again, and again. Measured
   // before the change: 40 cards learned in one sitting all landed on a single
   // day. Seeding per card is what breaks up the lump.
+  // Three Goods, not two: FSRS-6's defaults graduate a card in REAL_PARAMS's
+  // {1m, 10m} steps to a 2.0-day first review interval, and Anki's own fuzz
+  // ranges (see the next test) don't touch anything under 2.5 days at all — so a
+  // graduation-only scenario landed inside the "correctly never fuzzed" range and
+  // would fail for the wrong reason. One more Good clears it (verified directly:
+  // 11 days), which is what this test actually needs to exercise fuzz at all.
   const learn = (seed: string | undefined) => {
     let state = applyReview(null, review("2026-01-01T12:00:00Z", 3), REAL_PARAMS, seed);
+    state = applyReview(state, { reviewedAt: state.due, rating: 3 }, REAL_PARAMS, seed);
     state = applyReview(state, { reviewedAt: state.due, rating: 3 }, REAL_PARAMS, seed);
     return state.due.toISOString().slice(0, 10);
   };

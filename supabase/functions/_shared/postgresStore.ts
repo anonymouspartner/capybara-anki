@@ -93,6 +93,10 @@ function cardStateFromRow(row: Record<string, unknown>): CardStateRow {
     reps: row.reps as number,
     lapses: row.lapses as number,
     lastReview: row.last_review ? new Date(row.last_review as string) : null,
+    // Nullish fallback, same shape as leech_threshold/leech_action below: reads as
+    // the "not yet reviewed" default until the migration adding this column runs,
+    // so this is correct before and after.
+    learningStep: (row.learning_step as number | null) ?? 0,
     suspended: row.suspended as boolean,
     lastUserId: row.last_user_id as string | null,
   };
@@ -116,7 +120,10 @@ function schedulerConfigFromRow(row: Record<string, unknown>): SchedulerConfigRo
     userId: row.user_id as string,
     fsrsParams: (row.fsrs_params as number[] | null) ?? [],
     desiredRetention: row.desired_retention as number,
-    learningSteps: (row.learning_steps as number[] | null) ?? [],
+    // No nullish fallback here on purpose: `null` (column never configured) and a
+    // real `[]` (Anki's own "no short-term steps" convention) mean different
+    // things to the FSRS layer — see FsrsSchedulerParams.learningSteps.
+    learningSteps: row.learning_steps as number[] | null,
     dailyNewLimit: row.daily_new_limit as number,
     dailyReviewLimit: row.daily_review_limit as number,
     maxInterval: row.max_interval as number,
@@ -624,6 +631,7 @@ export class PostgresStore implements Store {
           reps: row.reps,
           lapses: row.lapses,
           last_review: row.lastReview ? row.lastReview.toISOString() : null,
+          learning_step: row.learningStep,
           suspended: row.suspended,
           last_user_id: row.lastUserId,
         },
