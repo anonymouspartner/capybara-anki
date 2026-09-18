@@ -71,6 +71,10 @@ export interface CardStateRow {
   reps: number;
   lapses: number;
   lastReview: Date | null;
+  /** ts-fsrs's per-card (re)learning-step counter — see FsrsCardState's docstring
+   * (src/fsrs/types.ts). 0 for a never-reviewed or already-graduated card, same
+   * default-before-any-answer convention as `reps`/`lapses`. */
+  learningStep: number;
   suspended: boolean;
   lastUserId: string | null;
 }
@@ -183,7 +187,9 @@ export interface SchedulerConfigRow {
   userId: string;
   fsrsParams: number[];
   desiredRetention: number;
-  learningSteps: number[];
+  /** See `FsrsSchedulerParams.learningSteps` (src/fsrs/types.ts) for what `null`
+   * vs. a real `[]` each mean. */
+  learningSteps: number[] | null;
   dailyNewLimit: number;
   dailyReviewLimit: number;
   maxInterval: number;

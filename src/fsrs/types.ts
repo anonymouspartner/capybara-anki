@@ -40,6 +40,15 @@ export interface FsrsCardState {
   reps: number;
   lapses: number;
   lastReview: Date;
+  /** ts-fsrs's own per-card counter of which (re)learning step this card is
+   * currently on — an index into `FsrsSchedulerParams.learningSteps`, not a
+   * duration. 0 once graduated to Review, and 0 before a card's first review.
+   * Added in ts-fsrs 5.0 alongside FSRS-6; must round-trip through storage like
+   * every other field here — resuming a card mid-steps without it silently
+   * restarts it at step 0 instead of continuing where it left off (verified
+   * directly: omitting it and rebuilding via `createEmptyCard`'s default is
+   * indistinguishable from a fresh card to the scheduler). */
+  learningStep: number;
 }
 
 /** The subset of `scheduler_config` that FSRS itself consumes. `learning_steps`,
@@ -54,4 +63,12 @@ export interface FsrsSchedulerParams {
   fsrsParams: number[];
   desiredRetention: number;
   maxInterval: number;
+  /** Anki's (re)learning steps, in minutes (e.g. `[1, 10]`) — real Anki data, per
+   * Anki's own convention, confirmed against a real export: an explicit `[]` means
+   * "no short-term steps, FSRS manages timing entirely" (verified directly: a new
+   * card graduates straight to Review on its first Good) and is passed through as
+   * such, not treated as missing. `null` means this was never configured at all —
+   * distinct from a real `[]` — and ts-fsrs's own built-in default (`1m, 10m`)
+   * applies instead. */
+  learningSteps: number[] | null;
 }

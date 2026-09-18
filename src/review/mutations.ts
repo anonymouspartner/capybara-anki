@@ -54,6 +54,7 @@ function toFsrsCardState(row: CardStateRow): FsrsCardState | null {
     reps: row.reps,
     lapses: row.lapses,
     lastReview: row.lastReview as Date,
+    learningStep: row.learningStep,
   };
 }
 
@@ -83,6 +84,7 @@ export function mergeCardState(
     reps: 0,
     lapses: 0,
     lastReview: null,
+    learningStep: 0,
     suspended: false,
     lastUserId: null,
   };
@@ -154,6 +156,7 @@ export function buildReviewMutation(
     reps: nextFsrsState.reps,
     lapses: nextFsrsState.lapses,
     lastReview: nextFsrsState.lastReview,
+    learningStep: nextFsrsState.learningStep,
     lastUserId: input.userId,
     // 'tag' changes no scheduling — the announcement is the whole action (see
     // leech.ts). Only 'suspend' touches the card, and it never *un*suspends:

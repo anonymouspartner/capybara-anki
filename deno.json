@@ -5,6 +5,6 @@
   },
   "lock": "deno.lock",
   "imports": {
-    "ts-fsrs": "npm:ts-fsrs@^4.7"
+    "ts-fsrs": "npm:ts-fsrs@^5.4"
   }
 }

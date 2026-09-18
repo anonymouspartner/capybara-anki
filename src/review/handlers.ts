@@ -35,6 +35,7 @@ function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
     fsrsParams: config.fsrsParams,
     desiredRetention: config.desiredRetention,
     maxInterval: config.maxInterval,
+    learningSteps: config.learningSteps,
   };
 }
 
