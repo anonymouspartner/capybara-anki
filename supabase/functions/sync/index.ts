@@ -31,6 +31,10 @@
  *                                    most recent answer to that card and rebuilds
  *                                    its state from the remaining log (§4.3)
  *   POST   /sync/suspend          → { noteId, cardKind?, suspended }
+ *   POST   /sync/bury             → { noteId, cardKind?, buried } — D12's third
+ *                                    action; answering a note's other card also
+ *                                    buries this one automatically (bury siblings,
+ *                                    src/review/mutations.ts's SiblingBury)
  *   PATCH  /sync/note/:id         → a partial NoteRow
  *   DELETE /sync/note/:id
  *   GET    /sync/stats?days=N     → stats screen (step 6): a day-by-day activity
@@ -51,6 +55,7 @@
  */
 
 import {
+  buryCard,
   deleteNote,
   editNote,
   getDeckSummaries,
@@ -130,6 +135,12 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
   if (req.method === "POST" && url.pathname === "/sync/suspend") {
     const body = await req.json();
     await setSuspended(store, body.noteId, body.cardKind ?? "recall", body.suspended);
+    return json({ ok: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/sync/bury") {
+    const body = await req.json();
+    await buryCard(store, body.noteId, body.cardKind ?? "recall", body.buried, new Date(), userId);
     return json({ ok: true });
   }
 

@@ -98,6 +98,9 @@ function cardStateFromRow(row: Record<string, unknown>): CardStateRow {
     // so this is correct before and after.
     learningStep: (row.learning_step as number | null) ?? 0,
     suspended: row.suspended as boolean,
+    // Same nullish-fallback shape, for the same reason: reads as "not buried"
+    // until the migration adding this column runs.
+    buriedOn: (row.buried_on as string | null) ?? null,
     lastUserId: row.last_user_id as string | null,
   };
 }
@@ -320,7 +323,16 @@ export class PostgresStore implements Store {
     return [...decks];
   }
 
-  async getDueCandidates(_userId: string, deck?: string): Promise<DueCandidate[]> {
+  async getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]> {
+    // Same day-key pattern as getDailyCounts below, and for the same reason:
+    // "still buried" is "buried on today's ankiDayKey," never an instant
+    // comparison — see DueCandidate.buried's docstring. getSchedulerConfig is
+    // memoized per request, so this costs nothing extra when getDailyCounts (or
+    // getDeckSummaries' own fan-out) already asked for the same user's config.
+    const config = await this.getSchedulerConfig(userId);
+    const boundary: DayBoundary = { timeZone: config.timeZone, rolloverHour: config.rolloverHour };
+    const today = ankiDayKey(now, boundary);
+
     // A two-step fetch-notes-then-`.in("note_id", noteIds)` query used to sit here.
     // It broke the moment a real account had a few hundred notes: PostgREST renders
     // `.in()` as a literal comma-separated list in the request URL, and a few hundred
@@ -338,7 +350,7 @@ export class PostgresStore implements Store {
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
       let noteQuery = this.client
         .from("anki_notes")
-        .select("deck, id, has_spelling, anki_card_state(card_kind, due, state, suspended)")
+        .select("deck, id, has_spelling, anki_card_state(card_kind, due, state, suspended, buried_on)")
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
       // Scoping to the Spelling deck cannot filter on anki_notes.deck — that
       // column says where the *note* lives, and a spelling card lives elsewhere
@@ -355,7 +367,13 @@ export class PostgresStore implements Store {
     const candidates: DueCandidate[] = [];
     for (const note of notes) {
       const states = (note.anki_card_state ?? []) as Array<
-        { card_kind: CardKind; due: string | null; state: DueCandidate["state"]; suspended: boolean }
+        {
+          card_kind: CardKind;
+          due: string | null;
+          state: DueCandidate["state"];
+          suspended: boolean;
+          buried_on: string | null;
+        }
       >;
       const stateByKind = new Map(states.map((s) => [s.card_kind, s]));
       const cardKinds: CardKind[] = note.has_spelling ? ["recall", "spelling"] : ["recall"];
@@ -368,6 +386,7 @@ export class PostgresStore implements Store {
           due: state?.due ? new Date(state.due) : null,
           state: state?.state ?? null,
           suspended: state?.suspended ?? false,
+          buried: state?.buried_on === today,
         });
       }
     }
@@ -633,6 +652,7 @@ export class PostgresStore implements Store {
           last_review: row.lastReview ? row.lastReview.toISOString() : null,
           learning_step: row.learningStep,
           suspended: row.suspended,
+          buried_on: row.buriedOn,
           last_user_id: row.lastUserId,
         },
         { onConflict: "note_id,card_kind" },

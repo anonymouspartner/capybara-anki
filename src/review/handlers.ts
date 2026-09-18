@@ -7,17 +7,19 @@
 
 import { selectDueQueue, summarizeDueQueue } from "./dueQueue.ts";
 import {
+  buildBuryMutation,
   buildReviewMutation,
   buildSuspendMutation,
   cardSeed,
   type IntervalPreview,
   mergeCardState,
   previewIntervals,
+  type SiblingBury,
   validateNoteEdit,
 } from "./mutations.ts";
 import { replayCardState } from "../fsrs/replay.ts";
 import { computeStats, type StatsResult } from "./stats.ts";
-import type { DayBoundary } from "./day.ts";
+import { ankiDayKey, type DayBoundary } from "./day.ts";
 import type {
   CardKind,
   CardStateRow,
@@ -56,7 +58,7 @@ export async function getDueQueue(
   deck?: string,
 ): Promise<DueItem[]> {
   const [candidates, config, counts] = await Promise.all([
-    store.getDueCandidates(userId, deck),
+    store.getDueCandidates(userId, now, deck),
     store.getSchedulerConfig(userId),
     store.getDailyCounts(userId, now, deck),
   ]);
@@ -84,7 +86,7 @@ export async function getDeckSummaries(store: Store, userId: string, now: Date):
   return Promise.all(
     decks.map(async (deck) => {
       const [candidates, counts] = await Promise.all([
-        store.getDueCandidates(userId, deck),
+        store.getDueCandidates(userId, now, deck),
         store.getDailyCounts(userId, now, deck),
       ]);
       return { deck, ...summarizeDueQueue(candidates, limits, counts, now) };
@@ -174,6 +176,8 @@ export async function getStats(
 
 export class NotFoundError extends Error {}
 
+const SIBLING_KIND: Record<CardKind, CardKind> = { recall: "spelling", spelling: "recall" };
+
 /** POST a review answer. Idempotent on `input.reviewId` — a retried submission
  * (the exact case §4.2 exists for) reaches `store.insertReview`, which no-ops on a
  * duplicate id, but still re-runs `upsertCardState` with the same computed values,
@@ -186,18 +190,37 @@ export interface SubmitReviewResult {
 }
 
 export async function submitReview(store: Store, input: ReviewInput): Promise<SubmitReviewResult> {
-  const [current, config] = await Promise.all([
+  const [current, config, note] = await Promise.all([
     store.getCardState(input.noteId, input.cardKind),
     store.getSchedulerConfig(input.userId),
+    store.getNote(input.noteId),
   ]);
-  const { reviewRow, cardStateRow, becameLeech } = buildReviewMutation(
+
+  // Anki's "bury siblings" (see SiblingBury's docstring): only notes with a real
+  // second card (D17) have a sibling to bury at all. One extra getCardState, only
+  // on that minority of notes — submitReview isn't a hot loop the way due-queue
+  // building is, so this isn't worth batching alongside the Promise.all above.
+  let sibling: SiblingBury | undefined;
+  if (note?.hasSpelling) {
+    const siblingCardKind = SIBLING_KIND[input.cardKind];
+    sibling = {
+      current: await store.getCardState(input.noteId, siblingCardKind),
+      noteId: input.noteId,
+      cardKind: siblingCardKind,
+      buriedOn: ankiDayKey(input.reviewedAt, dayBoundary(config)),
+    };
+  }
+
+  const { reviewRow, cardStateRow, becameLeech, siblingCardStateRow } = buildReviewMutation(
     current,
     input,
     toFsrsParams(config),
     { threshold: config.leechThreshold, action: config.leechAction },
+    sibling,
   );
   await store.insertReview(reviewRow);
   await store.upsertCardState(cardStateRow);
+  if (siblingCardStateRow) await store.upsertCardState(siblingCardStateRow);
   return { becameLeech };
 }
 
@@ -210,6 +233,28 @@ export async function setSuspended(
 ): Promise<void> {
   const current = await store.getCardState(noteId, cardKind);
   await store.upsertCardState(buildSuspendMutation(current, noteId, cardKind, suspended));
+}
+
+/** POST bury or unbury one of a note's (one or two, D17) cards — D12's third
+ * action, the manual half (see SiblingBury for the automatic half). Bury hides
+ * it from the due queue until the study day rolls over; unlike suspend, this
+ * never needs an explicit "undo" from the person, only tomorrow. `userId`
+ * resolves the study day boundary (day.ts) burying uses — per-user, since the
+ * two people learning here are not reliably in the same time zone (§3.4). */
+export async function buryCard(
+  store: Store,
+  noteId: string,
+  cardKind: CardKind,
+  buried: boolean,
+  now: Date,
+  userId: string,
+): Promise<void> {
+  const [current, config] = await Promise.all([
+    store.getCardState(noteId, cardKind),
+    store.getSchedulerConfig(userId),
+  ]);
+  const buriedOn = buried ? ankiDayKey(now, dayBoundary(config)) : null;
+  await store.upsertCardState(buildBuryMutation(current, noteId, cardKind, buriedOn));
 }
 
 export interface EditNoteResult {

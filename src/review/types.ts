@@ -76,6 +76,16 @@ export interface CardStateRow {
    * default-before-any-answer convention as `reps`/`lapses`. */
   learningStep: number;
   suspended: boolean;
+  /** D12's third action: hidden from the due queue until the study day rolls
+   * over, then automatically visible again — no unbury step, no cron job.
+   * Stored as the `ankiDayKey` (day.ts) it was buried on, not a boolean or an
+   * expiry instant: "still buried" is exactly "buried on today's key," which a
+   * caller with the right `DayBoundary` can always re-derive, and comparing keys
+   * is what keeps every day-boundary computation in this app DST-safe (day.ts's
+   * own docstring). `null` means not buried. Distinct from `suspended`, which is
+   * indefinite and a person's own decision — a stats screen counting suspended
+   * cards must not also count buried ones. */
+  buriedOn: string | null;
   lastUserId: string | null;
 }
 
@@ -144,6 +154,12 @@ export interface DueCandidate {
   due: Date | null;
   state: 0 | 1 | 2 | 3 | null;
   suspended: boolean;
+  /** Resolved, not raw: "is `CardStateRow.buriedOn` today's `ankiDayKey`," decided
+   * by whichever `Store` method builds this candidate (it has `now` and the
+   * user's `DayBoundary` on hand; dueQueue.ts, which consumes this, deliberately
+   * does not). A bury that expired at this study day's rollover is already
+   * `false` here — dueQueue.ts never re-derives it and never sees the raw key. */
+  buried: boolean;
 }
 
 /** Identifies one due card — `dueQueue.ts`'s output unit. Just `noteId` stopped
