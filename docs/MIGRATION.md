@@ -279,7 +279,7 @@ in afterwards.
 | Gap | Notes |
 |---|---|
 | **No bury** 🟢 fixed 2026-09-18 | D12 promised "suspend / bury / delete". Suspend and delete existed; bury was the missing third. Now built: manual bury/unbury (`POST /sync/bury`) plus Anki's automatic "bury siblings" — answering one of a `Capybara+` note's two cards (D17) buries the other until the study day rolls over, no unbury step needed. Stored as `anki_card_state.buried_on`, an `ankiDayKey` (day.ts), not a boolean or an expiry instant — see `src/review/mutations.ts`'s `buildBuryMutation`/`SiblingBury`. |
-| **No way to add a card in the app** | `createNote` is reachable only from `/scan`. Capture depends entirely on the bot or a photo. |
+| **No way to add a card in the app** 🟢 fixed 2026-09-18 | `createNote` was reachable only from `/scan`. Now also `POST /sync/note` (`handlers.ts`'s `addCard`) and a ➕ screen in the reviewer itself — deck picks itself from language, same convention `/scan` already used. `source: 'app'`, a new fourth provenance value distinct from `'scan'`/`'bot'` (schema migration, `anki_notes_source_check` widened). |
 | **No settings screen** | Daily limits, retention, rollover, timezone, leech threshold are all SQL-only. |
 | **No audio offline** | `sw.js` caches the shell only. Pronunciation cards need the network. |
 
@@ -358,7 +358,7 @@ asked for:
 | | Work |
 |---|---|
 | 5.1 | Bury. **Done, 2026-09-18** — manual bury/unbury plus automatic bury-siblings (D17). See §4's table and §6.5. |
-| 5.2 | Add-a-card screen |
+| 5.2 | Add-a-card screen. **Done, 2026-09-18.** See §4's table and §6.6. |
 | 5.3 | Settings screen |
 | 5.4 | Cache all audio in the service worker |
 
@@ -579,6 +579,21 @@ into a deck, click Bury, screenshot before and after, read `console
 re-verified the same way — screenshot shows the card correctly replaced by
 the next one in the queue, no console errors, only the (expected, unrelated)
 failure to load Telegram's own web-app script over this sandbox's proxy.
+
+### 6.6 Phase 5.2 (add-a-card), verified
+
+Reused `validateNoteEdit` rather than a second set of "what makes a card
+valid" rules — the same choice `importExtractedCards` (`/scan`) already
+made, for the same reason (D11: edit-in-place is the one repair path
+either way, so the rule has to be the one thing both writers agree on).
+Three new `handlers.test.ts` cases: a valid submission lands in the
+right deck for its language, English picks the English deck, an empty
+lemma is rejected before it ever reaches `store.createNote`. Verified
+in a real browser (same `run`-skill loop as §6.5): opened the add-card
+screen, submitted empty first (confirmed the inline validation message,
+not a crash), then added a real word — the deck list's Ukrainian new-count
+moved from 3 to 4 in the same session, confirming the card was actually
+written and immediately due, not just accepted and silently dropped.
 
 ---
 

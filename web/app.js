@@ -78,6 +78,7 @@ const contentEl = document.getElementById("content");
 const titleEl = document.getElementById("title");
 const backBtn = document.getElementById("back-btn");
 const scanLink = document.getElementById("scan-link");
+const addLink = document.getElementById("add-link");
 const statsStrip = document.getElementById("stats-strip");
 const noticeEl = document.getElementById("notice");
 
@@ -126,6 +127,7 @@ function escapeHtml(s) {
 }
 
 backBtn.addEventListener("click", showDeckList);
+addLink.addEventListener("click", showAddCardForm);
 
 // ---------------------------------------------------------------------------
 // Deck list
@@ -135,6 +137,7 @@ async function showDeckList() {
   state.view = "decks";
   backBtn.hidden = true;
   scanLink.hidden = false;
+  addLink.hidden = false;
   titleEl.textContent = "Capybara";
   statsStrip.hidden = true;
   // The notice describes an answer inside a deck session; leaving the deck ends
@@ -187,6 +190,85 @@ function renderDeckList() {
 }
 
 // ---------------------------------------------------------------------------
+// Add a card (Phase 5.2) — the one other way a note enters this app besides
+// /scan and capybara-bot's own /learn. Deliberately stays open after a
+// successful save rather than returning to the deck list: the real use this
+// was built for is typing a short list of words in one sitting, and bouncing
+// back to "Capybara" after every single word would make that the slower path.
+// ---------------------------------------------------------------------------
+
+const newCardState = { language: "uk" };
+
+function showAddCardForm() {
+  state.view = "add";
+  backBtn.hidden = false;
+  scanLink.hidden = true;
+  addLink.hidden = true;
+  statsStrip.hidden = true;
+  titleEl.textContent = "Add card";
+  hideNotice();
+  renderAddCardForm();
+}
+
+function renderAddCardForm() {
+  const fields = [
+    ["lemmaTranslation", "Translation"],
+    ["gloss", "Gloss"],
+    ["partOfSpeech", "Part of speech"],
+    ["example", "Example"],
+    ["exampleTranslation", "Example translation"],
+  ];
+  contentEl.innerHTML = `
+    <div id="edit-form" class="visible">
+      <label>Language
+        <select id="add-language">
+          <option value="uk" ${newCardState.language === "uk" ? "selected" : ""}>Ukrainian</option>
+          <option value="en" ${newCardState.language === "en" ? "selected" : ""}>English</option>
+        </select>
+      </label>
+      <label>Lemma
+        <input id="add-lemma" data-field="lemma" value="${escapeHtml(newCardState.lemma ?? "")}" autofocus />
+      </label>
+      ${
+        fields.map(([key, label]) => `
+          <label>${label}
+            <input data-field="${key}" value="${escapeHtml(newCardState[key] ?? "")}" />
+          </label>
+        `).join("")
+      }
+      <div id="edit-errors"></div>
+      <div id="tools-row">
+        <button id="save">Add</button>
+        <button id="cancel">Done</button>
+      </div>
+    </div>
+  `;
+  document.getElementById("add-language").addEventListener("change", (e) => {
+    newCardState.language = e.target.value;
+  });
+  document.getElementById("cancel").addEventListener("click", showDeckList);
+  document.getElementById("save").addEventListener("click", saveNewCard);
+  document.getElementById("add-lemma").focus();
+}
+
+async function saveNewCard() {
+  const input = { language: newCardState.language };
+  contentEl.querySelectorAll("[data-field]").forEach((el) => {
+    input[el.dataset.field] = el.value.trim() || null;
+  });
+  const result = await api("/sync/note", { method: "POST", body: JSON.stringify(input) });
+  if (!result.ok) {
+    document.getElementById("edit-errors").textContent = result.errors.join("; ");
+    return;
+  }
+  showNotice(`Added "${input.lemma}"`);
+  // Language carries over (adding several words in the same language in a row
+  // is the common case); everything else about the word just added does not.
+  Object.keys(newCardState).forEach((key) => { if (key !== "language") delete newCardState[key]; });
+  renderAddCardForm();
+}
+
+// ---------------------------------------------------------------------------
 // Review
 // ---------------------------------------------------------------------------
 
@@ -200,6 +282,7 @@ async function enterDeck(deck) {
   hideNotice();
   backBtn.hidden = false;
   scanLink.hidden = true;
+  addLink.hidden = true;
   titleEl.textContent = deck;
 
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;

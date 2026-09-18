@@ -35,6 +35,10 @@
  *                                    action; answering a note's other card also
  *                                    buries this one automatically (bury siblings,
  *                                    src/review/mutations.ts's SiblingBury)
+ *   POST   /sync/note             → { lemma, language, lemmaTranslation?, gloss?,
+ *                                    partOfSpeech?, example?, exampleTranslation? }
+ *                                    the add-a-card screen (Phase 5.2) — the deck
+ *                                    picks itself from language, same as /scan
  *   PATCH  /sync/note/:id         → a partial NoteRow
  *   DELETE /sync/note/:id
  *   GET    /sync/stats?days=N     → stats screen (step 6): a day-by-day activity
@@ -55,6 +59,7 @@
  */
 
 import {
+  addCard,
   buryCard,
   deleteNote,
   editNote,
@@ -142,6 +147,20 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
     const body = await req.json();
     await buryCard(store, body.noteId, body.cardKind ?? "recall", body.buried, new Date(), userId);
     return json({ ok: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/sync/note") {
+    const body = await req.json();
+    const result = await addCard(store, {
+      lemma: body.lemma,
+      language: body.language,
+      lemmaTranslation: body.lemmaTranslation ?? null,
+      gloss: body.gloss ?? null,
+      partOfSpeech: body.partOfSpeech ?? null,
+      example: body.example ?? null,
+      exampleTranslation: body.exampleTranslation ?? null,
+    });
+    return json(result, result.ok ? 200 : 400);
   }
 
   if (req.method === "PATCH" && noteIdFromPath) {

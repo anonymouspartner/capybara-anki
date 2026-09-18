@@ -1,5 +1,6 @@
 import { assertEquals, assertNotEquals, assertRejects } from "jsr:@std/assert@^1";
 import {
+  addCard,
   buryCard,
   deleteNote,
   editNote,
@@ -165,6 +166,58 @@ Deno.test("editNote: an invalid edit is rejected and never reaches the store", a
 Deno.test("editNote: editing a note that doesn't exist raises NotFoundError", async () => {
   const store = new InMemoryStore();
   await assertRejects(() => editNote(store, "missing", { gloss: "x" }), NotFoundError);
+});
+
+Deno.test("addCard: a valid submission creates a plain vocab note in the right deck", async () => {
+  const store = new InMemoryStore();
+  const result = await addCard(store, {
+    lemma: "капібара",
+    language: "uk",
+    lemmaTranslation: "capybara",
+    gloss: null,
+    partOfSpeech: "noun",
+    example: null,
+    exampleTranslation: null,
+  });
+  assertEquals(result.ok, true);
+  if (!result.id) throw new Error("expected an id on a successful addCard");
+  const note = await store.getNote(result.id);
+  assertEquals(note?.lemma, "капібара");
+  assertEquals(note?.deck, "Ukrainian"); // picked itself from language, no separate field
+  assertEquals(note?.kind, "vocab");
+  assertEquals(note?.hasSpelling, false);
+});
+
+Deno.test("addCard: English picks the English deck", async () => {
+  const store = new InMemoryStore();
+  const result = await addCard(store, {
+    lemma: "capybara",
+    language: "en",
+    lemmaTranslation: "капібара",
+    gloss: null,
+    partOfSpeech: null,
+    example: null,
+    exampleTranslation: null,
+  });
+  if (!result.id) throw new Error("expected an id on a successful addCard");
+  const note = await store.getNote(result.id);
+  assertEquals(note?.deck, "English");
+});
+
+Deno.test("addCard: an empty lemma is rejected and never reaches the store", async () => {
+  const store = new InMemoryStore();
+  const result = await addCard(store, {
+    lemma: "",
+    language: "uk",
+    lemmaTranslation: null,
+    gloss: null,
+    partOfSpeech: null,
+    example: null,
+    exampleTranslation: null,
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.id, undefined);
+  assertEquals(await store.getDecks("tim"), []); // nothing was ever created
 });
 
 Deno.test("deleteNote: removes the note, its card_state, and its reviews", async () => {

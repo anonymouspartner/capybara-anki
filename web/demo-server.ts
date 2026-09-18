@@ -17,6 +17,7 @@
  */
 
 import {
+  addCard,
   buryCard,
   deleteNote,
   editNote,
@@ -256,6 +257,19 @@ Deno.serve({ port: 8787 }, async (req) => {
     const body = await req.json();
     await buryCard(store, body.noteId, body.cardKind ?? "recall", body.buried, new Date(), DEMO_USER);
     return json({ ok: true });
+  }
+  if (req.method === "POST" && url.pathname === "/sync/note") {
+    const body = await req.json();
+    const result = await addCard(store, {
+      lemma: body.lemma,
+      language: body.language,
+      lemmaTranslation: body.lemmaTranslation ?? null,
+      gloss: body.gloss ?? null,
+      partOfSpeech: body.partOfSpeech ?? null,
+      example: body.example ?? null,
+      exampleTranslation: body.exampleTranslation ?? null,
+    });
+    return json(result, result.ok ? 200 : 400);
   }
   if (req.method === "PATCH" && noteId) {
     return json(await editNote(store, noteId, await req.json()));

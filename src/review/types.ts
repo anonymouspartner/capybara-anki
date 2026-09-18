@@ -125,11 +125,12 @@ export interface NoteRow {
   hasSpelling: boolean;
 }
 
-/** A note not yet in `notes` — what `/scan` (step 5, docs/DESIGN.md §4.1) inserts
- * directly, per D10 ("no ingest review step"): scan, extract, import, with
- * edit-in-place (D11) as the only repair path afterward. `source` is the one field
- * `NoteRow` deliberately omits (provenance the reviewer has no reason to touch) but
- * that a real insert always has an opinion about. */
+/** A note not yet in `notes` — what `/scan` (step 5, docs/DESIGN.md §4.1) and the
+ * add-a-card screen (Phase 5.2, `handlers.ts`'s `addCard`) insert directly, per
+ * D10 ("no ingest review step"): scan or type, then edit-in-place (D11) as the
+ * only repair path afterward. `source` is the one field `NoteRow` deliberately
+ * omits (provenance the reviewer has no reason to touch) but that a real insert
+ * always has an opinion about. */
 export interface NewNote {
   lemma: string;
   gloss: string | null;
@@ -142,7 +143,12 @@ export interface NewNote {
   deck: string;
   kind: NoteKind;
   hasSpelling: boolean;
-  source: "scan" | "bot" | "anki-import";
+  /** 'app': typed directly into the reviewer's own add-a-card screen — distinct
+   * from 'bot' (capybara-bot's /learn) and 'scan' (a photographed page), the two
+   * existing "a person deliberately chose this word" sources, because provenance
+   * is a property of which pipeline wrote the row, not something to overload an
+   * existing value for. */
+  source: "scan" | "bot" | "anki-import" | "app";
 }
 
 /** What the due-queue selector needs to know about one *card* (D17: a note with
