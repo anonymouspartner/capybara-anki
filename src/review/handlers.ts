@@ -24,6 +24,7 @@ import type {
   CardKind,
   CardStateRow,
   DueItem,
+  NewNote,
   NoteRow,
   QueueSummary,
   ReviewInput,
@@ -255,6 +256,60 @@ export async function buryCard(
   ]);
   const buriedOn = buried ? ankiDayKey(now, dayBoundary(config)) : null;
   await store.upsertCardState(buildBuryMutation(current, noteId, cardKind, buriedOn));
+}
+
+/** Where a manually-typed card lands — the deck picks itself from the language,
+ * same convention `/scan` uses (its own default is "Ukrainian"/'uk', see
+ * `supabase/functions/scan/index.ts`): nothing here has ever asked someone to
+ * name a deck separately from the language they're adding a word in. */
+function deckForLanguage(language: "uk" | "en"): string {
+  return language === "uk" ? "Ukrainian" : "English";
+}
+
+export interface AddCardInput {
+  lemma: string;
+  language: "uk" | "en";
+  lemmaTranslation: string | null;
+  gloss: string | null;
+  partOfSpeech: string | null;
+  example: string | null;
+  exampleTranslation: string | null;
+}
+
+export interface AddCardResult {
+  ok: boolean;
+  id?: string;
+  errors?: string[];
+}
+
+/** POST the add-a-card screen's submission (Phase 5.2) — the one repair path is
+ * still edit-in-place (D11) afterward, same as `/scan`'s import, and for the
+ * same reason this reuses `validateNoteEdit` rather than a second set of rules
+ * for "a card needs something on its front." Always plain vocabulary: a person
+ * typing one word at a time has no photographed `Capybara+` twin to give it a
+ * second Spelling card, and pronunciation notes (D18) come from a different
+ * pipeline entirely — see `importExtractedCards`'s identical reasoning. */
+export async function addCard(store: Store, input: AddCardInput): Promise<AddCardResult> {
+  const newNote: NewNote = {
+    lemma: input.lemma,
+    gloss: input.gloss,
+    lemmaTranslation: input.lemmaTranslation,
+    partOfSpeech: input.partOfSpeech,
+    language: input.language,
+    example: input.example,
+    exampleTranslation: input.exampleTranslation,
+    audioUrl: null,
+    deck: deckForLanguage(input.language),
+    kind: "vocab",
+    hasSpelling: false,
+    source: "app",
+  };
+
+  const result = validateNoteEdit(newNote);
+  if (!result.valid) return { ok: false, errors: result.errors };
+
+  const id = await store.createNote(newNote);
+  return { ok: true, id };
 }
 
 export interface EditNoteResult {
