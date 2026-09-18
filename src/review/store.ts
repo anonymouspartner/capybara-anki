@@ -55,8 +55,10 @@ export interface Store {
    * to one deck (undefined = every deck combined) — one entry per note, plus a
    * second `cardKind: 'spelling'` entry for each note with `hasSpelling` (D17).
    * Deck/language scoping happens here, not in dueQueue.ts, which only knows
-   * scheduling. */
-  getDueCandidates(userId: string, deck?: string): Promise<DueCandidate[]>;
+   * scheduling. `now` resolves `DueCandidate.buried` against the user's own
+   * `DayBoundary` — same reasoning as `getDailyCounts` taking it, and the same
+   * per-implementation pattern (see `InMemoryStore`'s below). */
+  getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]>;
   /** Daily new/review counts so far, scoped the same way as `getDueCandidates` —
    * each deck gets its own daily allowance against the one shared
    * `scheduler_config` limit, not one allowance split across every deck. */
@@ -168,7 +170,16 @@ export class InMemoryStore implements Store {
     return Promise.resolve([...decks]);
   }
 
-  getDueCandidates(_userId: string, deck?: string): Promise<DueCandidate[]> {
+  getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]> {
+    // Same day-key pattern as getDailyCounts just below, and for the same
+    // reason: "still buried" is "buried on today's ankiDayKey," never an instant
+    // comparison — see DueCandidate.buried's docstring.
+    const config = this.schedulerConfigs.get(userId);
+    const boundary: DayBoundary = config
+      ? { timeZone: config.timeZone, rolloverHour: config.rolloverHour }
+      : UTC_MIDNIGHT;
+    const today = ankiDayKey(now, boundary);
+
     const candidates: DueCandidate[] = [];
     for (const note of this.notes.values()) {
       const cardKinds: CardKind[] = note.hasSpelling ? ["recall", "spelling"] : ["recall"];
@@ -183,6 +194,7 @@ export class InMemoryStore implements Store {
           due: state?.due ?? null,
           state: state?.state ?? null,
           suspended: state?.suspended ?? false,
+          buried: state?.buriedOn === today,
         });
       }
     }

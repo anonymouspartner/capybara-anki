@@ -9,7 +9,7 @@ const NO_LIMITS_TAKEN = { newTakenToday: 0, reviewTakenToday: 0 };
 const GENEROUS_LIMITS = { dailyNewLimit: 100, dailyReviewLimit: 100 };
 
 function candidate(overrides: Partial<DueCandidate>): DueCandidate {
-  return { noteId: "n1", cardKind: "recall", due: null, state: null, suspended: false, ...overrides };
+  return { noteId: "n1", cardKind: "recall", due: null, state: null, suspended: false, buried: false, ...overrides };
 }
 
 /** Most tests here only care about which notes came back and in what order —
@@ -21,6 +21,16 @@ function noteIds(result: { noteId: string }[]): string[] {
 Deno.test("a suspended card never appears, however overdue", () => {
   const result = selectDueQueue(
     [candidate({ noteId: "n1", state: 2, due: YESTERDAY, suspended: true })],
+    GENEROUS_LIMITS,
+    NO_LIMITS_TAKEN,
+    NOW,
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("a buried card never appears, however overdue — same exclusion as suspended", () => {
+  const result = selectDueQueue(
+    [candidate({ noteId: "n1", state: 2, due: YESTERDAY, buried: true })],
     GENEROUS_LIMITS,
     NO_LIMITS_TAKEN,
     NOW,

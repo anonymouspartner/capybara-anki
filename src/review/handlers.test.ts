@@ -1,5 +1,6 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert@^1";
+import { assertEquals, assertNotEquals, assertRejects } from "jsr:@std/assert@^1";
 import {
+  buryCard,
   deleteNote,
   editNote,
   getDeckSummaries,
@@ -235,13 +236,84 @@ Deno.test("D17: reviewing a note's spelling card doesn't affect its recall card'
     reviewedAt: NOW,
   });
 
+  // "Untouched" is FSRS state (due/stability/state/reps — none of it moved),
+  // not queue visibility: bury-siblings (SiblingBury, mutations.ts) is a
+  // separate, deliberate effect covered by its own tests below, and reads as a
+  // buriedOn key on the row, never a change to any scheduling field.
+  const recall = await store.getCardState("n1", "recall");
+  assertEquals(recall?.state ?? null, null);
+  assertEquals(recall?.due ?? null, null);
+});
+
+Deno.test("bury siblings: answering one of a note's two cards buries the other until tomorrow", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: true });
+  seedConfig(store, "tim");
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "spelling",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+
+  // Recall is buried (excluded from today's queue) even though nothing suspended
+  // it and it was never itself answered — Anki's own automatic behaviour, so the
+  // two cards of one word never show back to back in the same session.
   const queue = await getDueQueue(store, "tim", NOW);
-  // Recall is untouched and still new, so it comes first. Spelling was just
-  // answered onto a ~10 minute learning step, which keeps it in the session as a
-  // learn-ahead card at the very end — what matters for D17 is that answering one
-  // card moved only that card's schedule.
-  assertEquals(queue.map((i) => i.cardKind), ["recall", "spelling"]);
-  assertEquals((await store.getCardState("n1", "recall"))?.state ?? null, null);
+  assertEquals(queue.map((i) => i.cardKind), ["spelling"]);
+
+  const recall = await store.getCardState("n1", "recall");
+  assertNotEquals(recall?.buriedOn ?? null, null);
+
+  // Tomorrow it's back, with no unbury step — see buriedOn's docstring.
+  const tomorrow = await getDueQueue(store, "tim", new Date(NOW.getTime() + 86_400_000));
+  assertEquals(new Set(tomorrow.map((i) => i.cardKind)), new Set(["recall", "spelling"]));
+});
+
+Deno.test("bury siblings: a note with only one card has no sibling to bury", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { hasSpelling: false });
+  seedConfig(store, "tim");
+
+  await submitReview(store, {
+    reviewId: "r1",
+    noteId: "n1",
+    cardKind: "recall",
+    userId: "tim",
+    rating: 3,
+    reviewedAt: NOW,
+  });
+
+  // Nothing to assert wrong here except the absence of a crash: submitReview
+  // must not try to fetch or bury a "spelling" card that was never seeded.
+  const recall = await store.getCardState("n1", "recall");
+  assertEquals(recall?.buriedOn ?? null, null);
+});
+
+Deno.test("manual bury: hides a card from the queue, unbury brings it straight back", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedConfig(store, "tim");
+
+  await buryCard(store, "n1", "recall", true, NOW, "tim");
+  assertEquals(await getDueQueue(store, "tim", NOW), []);
+
+  await buryCard(store, "n1", "recall", false, NOW, "tim");
+  const queue = await getDueQueue(store, "tim", NOW);
+  assertEquals(queue.map((i) => i.cardKind), ["recall"]);
+});
+
+Deno.test("manual bury: creates a card_state row from nothing, same as suspend", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1");
+  seedConfig(store, "tim");
+
+  assertEquals(await store.getCardState("n1", "recall"), null);
+  await buryCard(store, "n1", "recall", true, NOW, "tim");
+  assertNotEquals(await store.getCardState("n1", "recall"), null);
 });
 
 Deno.test("D17: suspending a note's spelling card leaves its recall card reviewable", async () => {
@@ -529,6 +601,7 @@ Deno.test("getDueQueueWithPreviews still renders content and previews correctly"
     lastReview: new Date(NOW.getTime() - 6 * 86_400_000),
     learningStep: 0,
     suspended: false,
+    buriedOn: null,
     lastUserId: "u1",
   });
 

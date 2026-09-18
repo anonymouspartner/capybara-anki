@@ -21,9 +21,11 @@
  *   3. Learning cards due within the next `LEARN_AHEAD_MS`, once everything above
  *      is exhausted — Anki's `learn_ahead_secs`, default 1200.
  *
- * All of it respects `suspended` (excluded outright) and "due now" (a card due
- * tomorrow doesn't show up early just because the queue is thin today) — step 3
- * being the one deliberate, bounded exception Anki itself makes.
+ * All of it respects `suspended` and `buried` (both excluded outright — see
+ * `DueCandidate.buried`'s docstring for why a bury's expiry is never this
+ * file's problem) and "due now" (a card due tomorrow doesn't show up early just
+ * because the queue is thin today) — step 3 being the one deliberate, bounded
+ * exception Anki itself makes.
  *
  * `selectDueQueue` (an ordered id list, for reviewing) and `summarizeDueQueue` (bucket
  * counts, for a deck-list screen) share the same categorization on purpose — a deck
@@ -54,7 +56,7 @@ function categorize(
   counts: DailyCounts,
   now: Date,
 ): Categorized {
-  const eligible = candidates.filter((c) => !c.suspended);
+  const eligible = candidates.filter((c) => !c.suspended && !c.buried);
   const isDueNow = (c: DueCandidate) => c.due !== null && c.due.getTime() <= now.getTime();
   const isLearning = (c: DueCandidate) => c.state === 1 || c.state === 3;
 

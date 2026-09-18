@@ -17,6 +17,7 @@
  */
 
 import {
+  buryCard,
   deleteNote,
   editNote,
   getDeckSummaries,
@@ -115,7 +116,7 @@ for (const note of demoNotes) store.notes.set(note.id, note);
 const dueYesterday: CardStateRow = {
   noteId: "demo-3", cardKind: "recall", due: new Date(Date.now() - 86_400_000), stability: 4.2,
   difficulty: 5.6, state: 2, reps: 2, lapses: 0,
-  lastReview: new Date(Date.now() - 5 * 86_400_000), learningStep: 0, suspended: false, lastUserId: DEMO_USER,
+  lastReview: new Date(Date.now() - 5 * 86_400_000), learningStep: 0, suspended: false, buriedOn: null, lastUserId: DEMO_USER,
 };
 store.cardStates.set(cardKey("demo-3", "recall"), dueYesterday);
 
@@ -249,6 +250,11 @@ Deno.serve({ port: 8787 }, async (req) => {
   if (req.method === "POST" && url.pathname === "/sync/suspend") {
     const body = await req.json();
     await setSuspended(store, body.noteId, body.cardKind ?? "recall", body.suspended);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && url.pathname === "/sync/bury") {
+    const body = await req.json();
+    await buryCard(store, body.noteId, body.cardKind ?? "recall", body.buried, new Date(), DEMO_USER);
     return json({ ok: true });
   }
   if (req.method === "PATCH" && noteId) {

@@ -1,5 +1,5 @@
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@^1";
-import { buildReviewMutation, buildSuspendMutation, previewIntervals, validateNoteEdit } from "./mutations.ts";
+import { buildBuryMutation, buildReviewMutation, buildSuspendMutation, previewIntervals, validateNoteEdit } from "./mutations.ts";
 import type { CardStateRow } from "./types.ts";
 
 const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500, learningSteps: [1, 10] };
@@ -17,6 +17,7 @@ function newCardState(overrides: Partial<CardStateRow> = {}): CardStateRow {
     lastReview: null,
     learningStep: 0,
     suspended: false,
+    buriedOn: null,
     lastUserId: null,
     ...overrides,
   };
@@ -92,6 +93,72 @@ Deno.test("unsuspending is the same operation with the opposite boolean", () => 
   const result = buildSuspendMutation(suspended, "n1", "recall", false);
   assertEquals(result.suspended, false);
   assertEquals(result.stability, 8.5);
+});
+
+Deno.test("burying a never-reviewed note creates a card_state row from nothing", () => {
+  const result = buildBuryMutation(null, "n1", "recall", "2026-09-16");
+  assertEquals(result.buriedOn, "2026-09-16");
+  assertEquals(result.noteId, "n1");
+  assertEquals(result.stability, null); // still genuinely new — nothing invented
+});
+
+Deno.test("burying an already-reviewed note leaves its FSRS state untouched", () => {
+  const reviewed = newCardState({ stability: 8.5, difficulty: 5.2, reps: 3, state: 2 });
+  const result = buildBuryMutation(reviewed, "n1", "recall", "2026-09-16");
+  assertEquals(result.buriedOn, "2026-09-16");
+  assertEquals(result.stability, 8.5);
+  assertEquals(result.reps, 3);
+});
+
+Deno.test("unburying is the same operation with null", () => {
+  const buried = newCardState({ buriedOn: "2026-09-16", stability: 8.5 });
+  const result = buildBuryMutation(buried, "n1", "recall", null);
+  assertEquals(result.buriedOn, null);
+  assertEquals(result.stability, 8.5);
+});
+
+Deno.test("bury and suspend are independent — burying leaves suspended exactly as it was", () => {
+  const suspended = newCardState({ suspended: true });
+  const result = buildBuryMutation(suspended, "n1", "recall", "2026-09-16");
+  assertEquals(result.suspended, true);
+  assertEquals(result.buriedOn, "2026-09-16");
+});
+
+Deno.test("bury siblings: answering a note's recall card buries its spelling card on today's key", () => {
+  const { cardStateRow, siblingCardStateRow } = buildReviewMutation(
+    null,
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    PARAMS,
+    undefined,
+    { current: null, noteId: "n1", cardKind: "spelling", buriedOn: "2026-01-01" },
+  );
+  assertEquals(cardStateRow.cardKind, "recall");
+  assertEquals(cardStateRow.buriedOn, null, "the answered card itself is never buried by this");
+  assertEquals(siblingCardStateRow?.cardKind, "spelling");
+  assertEquals(siblingCardStateRow?.buriedOn, "2026-01-01");
+});
+
+Deno.test("bury siblings: preserves the sibling's own FSRS state — bury never resets scheduling", () => {
+  const siblingCurrent = newCardState({ cardKind: "spelling", stability: 12, reps: 4, state: 2 });
+  const { siblingCardStateRow } = buildReviewMutation(
+    null,
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    PARAMS,
+    undefined,
+    { current: siblingCurrent, noteId: "n1", cardKind: "spelling", buriedOn: "2026-01-01" },
+  );
+  assertEquals(siblingCardStateRow?.stability, 12);
+  assertEquals(siblingCardStateRow?.reps, 4);
+  assertEquals(siblingCardStateRow?.buriedOn, "2026-01-01");
+});
+
+Deno.test("no sibling option, no sibling row — a note with one card leaves siblingCardStateRow undefined", () => {
+  const { siblingCardStateRow } = buildReviewMutation(
+    null,
+    { reviewId: "r1", noteId: "n1", cardKind: "recall", userId: "tim", rating: 3, reviewedAt: new Date("2026-01-01T00:00:00Z") },
+    PARAMS,
+  );
+  assertEquals(siblingCardStateRow, undefined);
 });
 
 Deno.test("D17: a note's recall and spelling cards keep fully independent state", () => {

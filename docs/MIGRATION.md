@@ -278,7 +278,7 @@ in afterwards.
 
 | Gap | Notes |
 |---|---|
-| **No bury** | D12 promised "suspend / bury / delete". Suspend and delete exist; bury was never built. |
+| **No bury** 🟢 fixed 2026-09-18 | D12 promised "suspend / bury / delete". Suspend and delete existed; bury was the missing third. Now built: manual bury/unbury (`POST /sync/bury`) plus Anki's automatic "bury siblings" — answering one of a `Capybara+` note's two cards (D17) buries the other until the study day rolls over, no unbury step needed. Stored as `anki_card_state.buried_on`, an `ankiDayKey` (day.ts), not a boolean or an expiry instant — see `src/review/mutations.ts`'s `buildBuryMutation`/`SiblingBury`. |
 | **No way to add a card in the app** | `createNote` is reachable only from `/scan`. Capture depends entirely on the bot or a photo. |
 | **No settings screen** | Daily limits, retention, rollover, timezone, leech threshold are all SQL-only. |
 | **No audio offline** | `sw.js` caches the shell only. Pronunciation cards need the network. |
@@ -355,8 +355,12 @@ asked for:
 
 ### Phase 5 — Parity
 
-5.1 Bury · 5.2 Add-a-card screen · 5.3 Settings screen · 5.4 Cache all audio in
-the service worker
+| | Work |
+|---|---|
+| 5.1 | Bury. **Done, 2026-09-18** — manual bury/unbury plus automatic bury-siblings (D17). See §4's table and §6.5. |
+| 5.2 | Add-a-card screen |
+| 5.3 | Settings screen |
+| 5.4 | Cache all audio in the service worker |
 
 ### Phase 6 — Cutover
 
@@ -552,6 +556,29 @@ itself is real and expected under this phase, not a bug to route around.
 **3.4/3.5 (timezone, leech).** Both were single, low-risk writes — a `real[]`
 default-adding migration already written and reviewed, and one `UPDATE` to a
 factual field — applied live and verified by reading the row back.
+
+### 6.5 Phase 5.1 (bury), verified
+
+Unit and integration tests (8 new, `mutations.test.ts`/`dueQueue.test.ts`/
+`handlers.test.ts`) cover the pure logic — manual bury/unbury, bury-siblings
+firing only for `hasSpelling` notes and leaving the sibling's own FSRS state
+untouched, a buried card excluded from `selectDueQueue` however overdue, and
+the bury expiring on its own at the next study-day rollover with no unbury
+step. All passed before this was considered done — but `deno check` and the
+unit suite both stayed green through a real bug that only running the app
+caught: `web/demo-server.ts` keeps its own hand-written copy of
+`sync/index.ts`'s route table (a deliberate duplication — see that file's own
+docstring on why it exists independently of the real Postgres-backed
+function), and the new `/sync/bury` route only ever got added to
+`sync/index.ts`. Nothing in the type system connects a route string to a
+handler call, so the omission compiled and every test passed, right up until
+an actual browser actually clicked the actual button and got a 404. Caught by
+driving `web/demo-server.ts` in headless Chromium (`run` skill): navigate
+into a deck, click Bury, screenshot before and after, read `console
+--errors`. Fixed by adding the same route to `demo-server.ts`, then
+re-verified the same way — screenshot shows the card correctly replaced by
+the next one in the queue, no console errors, only the (expected, unrelated)
+failure to load Telegram's own web-app script over this sandbox's proxy.
 
 ---
 

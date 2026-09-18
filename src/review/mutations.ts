@@ -86,6 +86,7 @@ export function mergeCardState(
     lastReview: null,
     learningStep: 0,
     suspended: false,
+    buriedOn: null,
     lastUserId: null,
   };
   return { ...base, ...patch };
@@ -108,12 +109,28 @@ export const DEFAULT_LEECH_POLICY: LeechPolicy = {
   action: DEFAULT_LEECH_ACTION,
 };
 
+/** The sibling to bury and the `ankiDayKey` to bury it on — Anki's automatic
+ * "bury siblings" (rslib/src/scheduler/answering/mod.rs): answering one of a
+ * `Capybara+` note's two independent cards (D17) hides the other until the
+ * study day rolls over, so a session never shows recall and spelling of the
+ * same word back to back. Optional because most notes (`hasSpelling: false`)
+ * have no sibling to bury at all — the caller (`handlers.ts`, which already
+ * knows the note and the day boundary) decides whether one applies; this
+ * module stays a pure state transition either way. */
+export interface SiblingBury {
+  current: CardStateRow | null;
+  noteId: string;
+  cardKind: CardKind;
+  buriedOn: string;
+}
+
 export function buildReviewMutation(
   current: CardStateRow | null,
   input: ReviewInput,
   params: FsrsSchedulerParams,
   leech: LeechPolicy = DEFAULT_LEECH_POLICY,
-): { reviewRow: ReviewRow; cardStateRow: CardStateRow; becameLeech: boolean } {
+  sibling?: SiblingBury,
+): { reviewRow: ReviewRow; cardStateRow: CardStateRow; becameLeech: boolean; siblingCardStateRow?: CardStateRow } {
   const priorFsrsState = current ? toFsrsCardState(current) : null;
   const nextFsrsState = applyReview(
     priorFsrsState,
@@ -165,7 +182,11 @@ export function buildReviewMutation(
     ...(becameLeech && leech.action === "suspend" ? { suspended: true } : {}),
   });
 
-  return { reviewRow, cardStateRow, becameLeech };
+  const siblingCardStateRow = sibling
+    ? buildBuryMutation(sibling.current, sibling.noteId, sibling.cardKind, sibling.buriedOn)
+    : undefined;
+
+  return { reviewRow, cardStateRow, becameLeech, siblingCardStateRow };
 }
 
 /** Suspend or unsuspend. Creates a `card_state` row from nothing if the note has
@@ -178,6 +199,20 @@ export function buildSuspendMutation(
   suspended: boolean,
 ): CardStateRow {
   return mergeCardState(current, noteId, cardKind, { suspended });
+}
+
+/** Bury (pass today's `ankiDayKey`) or unbury (pass `null`) — the manual half of
+ * D12's third action. `buriedOn` is the caller's to compute (see
+ * `CardStateRow.buriedOn`'s docstring on why this module stays unaware of
+ * `DayBoundary`); `buildReviewMutation`'s `sibling` option is the automatic half,
+ * for Anki's own "bury siblings" behaviour. */
+export function buildBuryMutation(
+  current: CardStateRow | null,
+  noteId: string,
+  cardKind: CardKind,
+  buriedOn: string | null,
+): CardStateRow {
+  return mergeCardState(current, noteId, cardKind, { buriedOn });
 }
 
 export interface NoteEditResult {

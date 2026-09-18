@@ -312,6 +312,7 @@ function renderReview() {
       <div id="tools-row">
         <button id="edit">Edit</button>
         <button id="suspend">Suspend</button>
+        <button id="bury">Bury</button>
         <button id="delete">Delete</button>
       </div>
     </div>
@@ -345,6 +346,7 @@ function renderReview() {
     renderReview();
   });
   document.getElementById("suspend").addEventListener("click", suspendCurrent);
+  document.getElementById("bury").addEventListener("click", buryCurrent);
   document.getElementById("delete").addEventListener("click", deleteCurrent);
 }
 
@@ -499,6 +501,15 @@ async function suspendCurrent() {
   advance();
 }
 
+async function buryCurrent() {
+  const note = currentNote();
+  await api("/sync/bury", {
+    method: "POST",
+    body: JSON.stringify({ noteId: note.id, cardKind: note.cardKind, buried: true }),
+  });
+  advance();
+}
+
 async function deleteCurrent() {
   const note = currentNote();
   if (!confirm(`Delete "${note.lemma}" permanently? This removes its review history too.`)) return;
@@ -584,6 +595,7 @@ function renderSpellingReview(note) {
       <div id="tools-row">
         <button id="edit">Edit</button>
         <button id="suspend">Suspend</button>
+        <button id="bury">Bury</button>
         <button id="delete">Delete</button>
       </div>
     </div>
@@ -634,6 +646,7 @@ function renderSpellingReview(note) {
     renderReview();
   });
   document.getElementById("suspend").addEventListener("click", suspendCurrent);
+  document.getElementById("bury").addEventListener("click", buryCurrent);
   document.getElementById("delete").addEventListener("click", deleteCurrent);
 }
 
@@ -794,6 +807,7 @@ function renderPronunciationReview(note) {
 
       <div id="tools-row">
         <button id="suspend">Suspend</button>
+        <button id="bury">Bury</button>
         <button id="delete">Delete</button>
       </div>
     </div>
@@ -804,6 +818,7 @@ function renderPronunciationReview(note) {
   if (micBtn && state.recording === "recording") micBtn.addEventListener("click", stopAndScore);
   document.getElementById("continue-btn")?.addEventListener("click", continueAfterScore);
   document.getElementById("suspend").addEventListener("click", suspendCurrent);
+  document.getElementById("bury").addEventListener("click", buryCurrent);
   document.getElementById("delete").addEventListener("click", deleteCurrent);
 }
 
