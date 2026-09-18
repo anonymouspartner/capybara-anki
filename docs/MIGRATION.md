@@ -36,9 +36,10 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
 - Once the recovery load actually runs, the remaining work is real but bounded:
-  one deferred fidelity decision (daily limits, §3.3) and four parity features
-  (Phase 5) before the cutover itself (Phase 6). The other four fidelity gaps
-  (§3.1, 3.2, 3.4, 3.5) are done as of 2026-09-18.
+  one deferred fidelity decision (daily limits, §3.3) and one parity feature
+  (5.4, caching pronunciation audio offline) before the cutover itself (Phase 6).
+  The other four fidelity gaps (§3.1, 3.2, 3.4, 3.5) and three of Phase 5's four
+  parity features (5.1-5.3) are done as of 2026-09-18.
 
 ---
 
@@ -280,7 +281,7 @@ in afterwards.
 |---|---|
 | **No bury** 🟢 fixed 2026-09-18 | D12 promised "suspend / bury / delete". Suspend and delete existed; bury was the missing third. Now built: manual bury/unbury (`POST /sync/bury`) plus Anki's automatic "bury siblings" — answering one of a `Capybara+` note's two cards (D17) buries the other until the study day rolls over, no unbury step needed. Stored as `anki_card_state.buried_on`, an `ankiDayKey` (day.ts), not a boolean or an expiry instant — see `src/review/mutations.ts`'s `buildBuryMutation`/`SiblingBury`. |
 | **No way to add a card in the app** 🟢 fixed 2026-09-18 | `createNote` was reachable only from `/scan`. Now also `POST /sync/note` (`handlers.ts`'s `addCard`) and a ➕ screen in the reviewer itself — deck picks itself from language, same convention `/scan` already used. `source: 'app'`, a new fourth provenance value distinct from `'scan'`/`'bot'` (schema migration, `anki_notes_source_check` widened). |
-| **No settings screen** | Daily limits, retention, rollover, timezone, leech threshold are all SQL-only. |
+| **No settings screen** 🟢 fixed 2026-09-18 | Daily limits, retention, rollover, timezone, leech threshold were all SQL-only. Now a ⚙️ screen next to ➕: `GET`/`POST /sync/settings` (`handlers.ts`'s `getSettings`/`updateSettings`), validated the same edit-in-place way as a note (`mutations.ts`'s `validateSettingsEdit`). Deliberately excludes `fsrsParams`/`maxInterval`/`learningSteps` — §4's gap never asked for those to become editable, and nothing about them changed. |
 | **No audio offline** | `sw.js` caches the shell only. Pronunciation cards need the network. |
 
 That last one closes `DESIGN.md` §11 open question 1, which asked for a size
@@ -359,7 +360,7 @@ asked for:
 |---|---|
 | 5.1 | Bury. **Done, 2026-09-18** — manual bury/unbury plus automatic bury-siblings (D17). See §4's table and §6.5. |
 | 5.2 | Add-a-card screen. **Done, 2026-09-18.** See §4's table and §6.6. |
-| 5.3 | Settings screen |
+| 5.3 | Settings screen. **Done, 2026-09-18.** See §4's table and §6.7. |
 | 5.4 | Cache all audio in the service worker |
 
 ### Phase 6 — Cutover
@@ -594,6 +595,43 @@ screen, submitted empty first (confirmed the inline validation message,
 not a crash), then added a real word — the deck list's Ukrainian new-count
 moved from 3 to 4 in the same session, confirming the card was actually
 written and immediately due, not just accepted and silently dropped.
+
+### 6.7 Phase 5.3 (settings screen), verified
+
+A ⚙️ screen beside ➕, reachable only from the deck list (same convention as
+➕): `GET /sync/settings` loads the editable subset of `scheduler_config`,
+`POST /sync/settings` writes back only the fields the person actually
+changed — a diff against what was loaded, not a blind overwrite of the whole
+row, the same "a patch, not a blind write" shape `saveEdit` already used for
+notes. Deliberately narrow: daily limits, retention, rollover hour, timezone,
+leech threshold/action — exactly what §4's gap named. `fsrsParams`/
+`maxInterval`/`learningSteps` stay SQL-only; nothing asked for those to
+become editable, and a mistyped weight vector is a much sharper edge than a
+mistyped limit.
+
+`validateSettingsEdit` (`mutations.ts`) is field hygiene, same spirit as
+`validateNoteEdit`: rejects a retention outside `(0, 1)`, a rollover hour
+outside `0-23`, an unrecognized time zone (handed to `Intl` and caught if it
+throws) — but a daily limit of 0 passes, because "review nothing new today"
+is a real thing to want, not a mistake to block. 16 new
+`mutations.test.ts` cases cover every field's boundary; three more in
+`handlers.test.ts` cover `getSettings`/`updateSettings` against
+`InMemoryStore`, including that an invalid patch never reaches
+`store.updateSchedulerConfig` at all.
+
+Learned from §6.5 not to trust `deno check` and the unit suite alone for a
+route that has to exist in two places: `web/demo-server.ts`'s hand-written
+route table got `/sync/settings` (GET and POST) added in the same commit as
+`sync/index.ts`, before running anything, rather than after a browser found
+the gap a second time. Verified in a real browser anyway (`run` skill):
+opened Settings, confirmed the loaded values matched the demo config,
+changed the daily new limit/timezone/leech action and saved, reopened
+Settings and confirmed the new values persisted (not just accepted and
+forgotten), then confirmed both halves of validation — an out-of-range
+rollover hour shows the inline error and does not navigate away, and
+Cancel after editing a field leaves the stored value untouched. No console
+errors beyond the same (expected, unrelated) Telegram script failure §6.5
+already names.
 
 ---
 

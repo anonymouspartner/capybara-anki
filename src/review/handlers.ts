@@ -14,8 +14,10 @@ import {
   type IntervalPreview,
   mergeCardState,
   previewIntervals,
+  type SettingsPatch,
   type SiblingBury,
   validateNoteEdit,
+  validateSettingsEdit,
 } from "./mutations.ts";
 import { replayCardState } from "../fsrs/replay.ts";
 import { computeStats, type StatsResult } from "./stats.ts";
@@ -310,6 +312,46 @@ export async function addCard(store: Store, input: AddCardInput): Promise<AddCar
 
   const id = await store.createNote(newNote);
   return { ok: true, id };
+}
+
+/** GET the settings screen's (Phase 5.3) values — the whole row minus the
+ * fields the screen doesn't expose (`fsrsParams`, `maxInterval`,
+ * `learningSteps`; see `SettingsPatch`'s docstring). Returning the full row
+ * rather than a narrower projection keeps this the same shape `SettingsPatch`
+ * is `Pick`ed from, so the screen's "what can I edit" and "what am I shown"
+ * never drift apart. */
+export type SettingsView = Pick<
+  SchedulerConfigRow,
+  "dailyNewLimit" | "dailyReviewLimit" | "desiredRetention" | "timeZone" | "rolloverHour" | "leechThreshold" | "leechAction"
+>;
+
+export async function getSettings(store: Store, userId: string): Promise<SettingsView> {
+  const config = await store.getSchedulerConfig(userId);
+  return {
+    dailyNewLimit: config.dailyNewLimit,
+    dailyReviewLimit: config.dailyReviewLimit,
+    desiredRetention: config.desiredRetention,
+    timeZone: config.timeZone,
+    rolloverHour: config.rolloverHour,
+    leechThreshold: config.leechThreshold,
+    leechAction: config.leechAction,
+  };
+}
+
+export interface UpdateSettingsResult {
+  ok: boolean;
+  errors?: string[];
+}
+
+/** POST the settings screen's submission. Validates, then writes — same
+ * two-step shape as `editNote`/`addCard`, and the same reason: the one
+ * repair path for a bad value is never submitting it in the first place. */
+export async function updateSettings(store: Store, userId: string, patch: SettingsPatch): Promise<UpdateSettingsResult> {
+  const result = validateSettingsEdit(patch);
+  if (!result.valid) return { ok: false, errors: result.errors };
+
+  await store.updateSchedulerConfig(userId, result.patch!);
+  return { ok: true };
 }
 
 export interface EditNoteResult {

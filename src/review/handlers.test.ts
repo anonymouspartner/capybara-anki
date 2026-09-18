@@ -7,11 +7,13 @@ import {
   getDeckSummaries,
   getDueQueue,
   getDueQueueWithPreviews,
+  getSettings,
   getStats,
   NotFoundError,
   setSuspended,
   submitReview,
   undoLastReview,
+  updateSettings,
 } from "./handlers.ts";
 import { cardKey, InMemoryStore } from "./store.ts";
 import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD } from "./leech.ts";
@@ -218,6 +220,41 @@ Deno.test("addCard: an empty lemma is rejected and never reaches the store", asy
   assertEquals(result.ok, false);
   assertEquals(result.id, undefined);
   assertEquals(await store.getDecks("tim"), []); // nothing was ever created
+});
+
+Deno.test("getSettings: reports the editable subset of scheduler_config", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "tim", { dailyNewLimit: 30, timeZone: "Europe/Kyiv", leechThreshold: 6 });
+  const settings = await getSettings(store, "tim");
+  assertEquals(settings, {
+    dailyNewLimit: 30,
+    dailyReviewLimit: 200,
+    desiredRetention: 0.9,
+    timeZone: "Europe/Kyiv",
+    rolloverHour: 4,
+    leechThreshold: 6,
+    leechAction: DEFAULT_LEECH_ACTION,
+  });
+});
+
+Deno.test("updateSettings: a valid patch writes through and leaves untouched fields alone", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "tim", { dailyNewLimit: 40, leechThreshold: 8 });
+  const result = await updateSettings(store, "tim", { dailyNewLimit: 15 });
+  assertEquals(result.ok, true);
+  const config = await store.getSchedulerConfig("tim");
+  assertEquals(config.dailyNewLimit, 15);
+  assertEquals(config.leechThreshold, 8); // untouched — patch only named dailyNewLimit
+});
+
+Deno.test("updateSettings: an invalid patch is rejected and never reaches the store", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "tim");
+  const result = await updateSettings(store, "tim", { rolloverHour: 30 });
+  assertEquals(result.ok, false);
+  assertNotEquals(result.errors, undefined);
+  const config = await store.getSchedulerConfig("tim");
+  assertEquals(config.rolloverHour, 4); // never written
 });
 
 Deno.test("deleteNote: removes the note, its card_state, and its reviews", async () => {

@@ -1,5 +1,12 @@
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@^1";
-import { buildBuryMutation, buildReviewMutation, buildSuspendMutation, previewIntervals, validateNoteEdit } from "./mutations.ts";
+import {
+  buildBuryMutation,
+  buildReviewMutation,
+  buildSuspendMutation,
+  previewIntervals,
+  validateNoteEdit,
+  validateSettingsEdit,
+} from "./mutations.ts";
 import type { CardStateRow } from "./types.ts";
 
 const PARAMS = { fsrsParams: [], desiredRetention: 0.9, maxInterval: 36500, learningSteps: [1, 10] };
@@ -195,6 +202,81 @@ Deno.test("a real edit passes through untouched", () => {
 Deno.test("editing a field this function doesn't validate (e.g. gloss alone) is never blocked by it", () => {
   const result = validateNoteEdit({ gloss: "" });
   assertEquals(result.valid, true);
+});
+
+Deno.test("a settings patch with every field valid passes through untouched", () => {
+  const result = validateSettingsEdit({
+    dailyNewLimit: 20,
+    dailyReviewLimit: 100,
+    desiredRetention: 0.85,
+    timeZone: "Europe/Kyiv",
+    rolloverHour: 4,
+    leechThreshold: 8,
+    leechAction: "suspend",
+  });
+  assertEquals(result.valid, true);
+  assertEquals(result.patch?.timeZone, "Europe/Kyiv");
+});
+
+Deno.test("a null timeZone (UTC) is valid", () => {
+  const result = validateSettingsEdit({ timeZone: null });
+  assertEquals(result.valid, true);
+});
+
+Deno.test("a daily limit of 0 is valid — it means 'nothing new today', a real thing to want", () => {
+  const result = validateSettingsEdit({ dailyNewLimit: 0 });
+  assertEquals(result.valid, true);
+});
+
+Deno.test("a negative daily limit is rejected", () => {
+  const result = validateSettingsEdit({ dailyReviewLimit: -1 });
+  assertEquals(result.valid, false);
+  assertEquals(result.patch, undefined);
+});
+
+Deno.test("a non-integer daily limit is rejected", () => {
+  const result = validateSettingsEdit({ dailyNewLimit: 2.5 });
+  assertEquals(result.valid, false);
+});
+
+Deno.test("desired retention outside (0, 1) is rejected", () => {
+  assertEquals(validateSettingsEdit({ desiredRetention: 0 }).valid, false);
+  assertEquals(validateSettingsEdit({ desiredRetention: 1 }).valid, false);
+  assertEquals(validateSettingsEdit({ desiredRetention: 1.1 }).valid, false);
+  assertEquals(validateSettingsEdit({ desiredRetention: 0.9 }).valid, true);
+});
+
+Deno.test("a rollover hour outside 0-23 is rejected", () => {
+  assertEquals(validateSettingsEdit({ rolloverHour: 24 }).valid, false);
+  assertEquals(validateSettingsEdit({ rolloverHour: -1 }).valid, false);
+  assertEquals(validateSettingsEdit({ rolloverHour: 0 }).valid, true);
+  assertEquals(validateSettingsEdit({ rolloverHour: 23 }).valid, true);
+});
+
+Deno.test("a leech threshold of 0 is valid — it disables the check, matching Anki", () => {
+  assertEquals(validateSettingsEdit({ leechThreshold: 0 }).valid, true);
+});
+
+Deno.test("an invalid leech action is rejected", () => {
+  // deno-lint-ignore no-explicit-any
+  const result = validateSettingsEdit({ leechAction: "delete" as any });
+  assertEquals(result.valid, false);
+});
+
+Deno.test("an unrecognized time zone name is rejected", () => {
+  const result = validateSettingsEdit({ timeZone: "Not/AZone" });
+  assertEquals(result.valid, false);
+});
+
+Deno.test("an empty time zone string is rejected", () => {
+  const result = validateSettingsEdit({ timeZone: "" });
+  assertEquals(result.valid, false);
+});
+
+Deno.test("editing one settings field never blocks on the others being absent", () => {
+  const result = validateSettingsEdit({ leechThreshold: 3 });
+  assertEquals(result.valid, true);
+  assertEquals(result.patch, { leechThreshold: 3 });
 });
 
 Deno.test("previewIntervals: a harder rating never schedules sooner than an easier one", () => {

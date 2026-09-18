@@ -79,6 +79,7 @@ const titleEl = document.getElementById("title");
 const backBtn = document.getElementById("back-btn");
 const scanLink = document.getElementById("scan-link");
 const addLink = document.getElementById("add-link");
+const settingsLink = document.getElementById("settings-link");
 const statsStrip = document.getElementById("stats-strip");
 const noticeEl = document.getElementById("notice");
 
@@ -128,6 +129,7 @@ function escapeHtml(s) {
 
 backBtn.addEventListener("click", showDeckList);
 addLink.addEventListener("click", showAddCardForm);
+settingsLink.addEventListener("click", showSettingsForm);
 
 // ---------------------------------------------------------------------------
 // Deck list
@@ -138,6 +140,7 @@ async function showDeckList() {
   backBtn.hidden = true;
   scanLink.hidden = false;
   addLink.hidden = false;
+  settingsLink.hidden = false;
   titleEl.textContent = "Capybara";
   statsStrip.hidden = true;
   // The notice describes an answer inside a deck session; leaving the deck ends
@@ -204,6 +207,7 @@ function showAddCardForm() {
   backBtn.hidden = false;
   scanLink.hidden = true;
   addLink.hidden = true;
+  settingsLink.hidden = true;
   statsStrip.hidden = true;
   titleEl.textContent = "Add card";
   hideNotice();
@@ -269,6 +273,155 @@ async function saveNewCard() {
 }
 
 // ---------------------------------------------------------------------------
+// Settings (Phase 5.3) — daily limits, retention, rollover, timezone, leech
+// threshold/action: the last of §4's "SQL-only" gaps. Loads the current
+// `scheduler_config` row, edits a copy of it locally, and only writes back
+// (as a patch of whatever actually changed) on Save — Cancel discards the
+// copy and the server is never touched, same "nothing is submitted until
+// asked" shape as the add-a-card and edit-in-place forms.
+// ---------------------------------------------------------------------------
+
+let settingsDraft = null;
+/** What was actually loaded from the server — the baseline `saveSettings`
+ * diffs the draft against, so a Save only ever sends the fields someone
+ * really changed, not a full row every time (an edit-in-place patch, not a
+ * blind overwrite). */
+let settingsBaseline = null;
+
+async function showSettingsForm() {
+  state.view = "settings";
+  backBtn.hidden = false;
+  scanLink.hidden = true;
+  addLink.hidden = true;
+  settingsLink.hidden = true;
+  statsStrip.hidden = true;
+  titleEl.textContent = "Settings";
+  hideNotice();
+
+  contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;
+  try {
+    settingsBaseline = await api("/sync/settings");
+  } catch (e) {
+    contentEl.innerHTML = `<div id="error">Couldn't load settings.</div>`;
+    console.error(e);
+    return;
+  }
+  settingsDraft = { ...settingsBaseline };
+  renderSettingsForm();
+}
+
+/** One field's editor: `type` picks the input widget (all the settings screen
+ * needs is text and select — a leech action is one of two words, not free
+ * text), `value`/`onchange` translate between the input's string and the
+ * config row's real type (number, or `null` for "unset time zone"). */
+const SETTINGS_FIELDS = [
+  {
+    key: "dailyNewLimit",
+    label: "Daily new card limit",
+    type: "number",
+    toInput: (v) => String(v),
+    fromInput: (s) => Number(s),
+  },
+  {
+    key: "dailyReviewLimit",
+    label: "Daily review limit",
+    type: "number",
+    toInput: (v) => String(v),
+    fromInput: (s) => Number(s),
+  },
+  {
+    key: "desiredRetention",
+    label: "Desired retention (0–1)",
+    type: "number",
+    step: "0.01",
+    toInput: (v) => String(v),
+    fromInput: (s) => Number(s),
+  },
+  {
+    key: "rolloverHour",
+    label: "Day rollover hour (0–23)",
+    type: "number",
+    toInput: (v) => String(v),
+    fromInput: (s) => Number(s),
+  },
+  {
+    key: "timeZone",
+    label: "Time zone (IANA name, blank for UTC)",
+    type: "text",
+    toInput: (v) => v ?? "",
+    fromInput: (s) => (s.trim() === "" ? null : s.trim()),
+  },
+  {
+    key: "leechThreshold",
+    label: "Leech threshold (0 disables it)",
+    type: "number",
+    toInput: (v) => String(v),
+    fromInput: (s) => Number(s),
+  },
+];
+
+function renderSettingsForm() {
+  contentEl.innerHTML = `
+    <div id="edit-form" class="visible">
+      ${
+        SETTINGS_FIELDS.map((field) => `
+          <label>${field.label}
+            <input data-setting="${field.key}" type="${field.type}" ${field.step ? `step="${field.step}"` : ""}
+                   value="${escapeHtml(field.toInput(settingsDraft[field.key]))}" />
+          </label>
+        `).join("")
+      }
+      <label>Leech action
+        <select data-setting="leechAction">
+          <option value="tag" ${settingsDraft.leechAction === "tag" ? "selected" : ""}>Tag (announce only)</option>
+          <option value="suspend" ${settingsDraft.leechAction === "suspend" ? "selected" : ""}>Suspend</option>
+        </select>
+      </label>
+      <div id="edit-errors"></div>
+      <div id="tools-row">
+        <button id="save">Save</button>
+        <button id="cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+  contentEl.querySelectorAll("[data-setting]").forEach((el) => {
+    el.addEventListener("change", () => {
+      const field = SETTINGS_FIELDS.find((f) => f.key === el.dataset.setting);
+      settingsDraft[el.dataset.setting] = field ? field.fromInput(el.value) : el.value;
+    });
+  });
+  document.getElementById("cancel").addEventListener("click", showDeckList);
+  document.getElementById("save").addEventListener("click", saveSettings);
+}
+
+/** Only the fields that actually changed — same "a patch, not a blind
+ * overwrite" shape `saveEdit` uses for notes, and it means a stray
+ * `Number("")` (`NaN`, from a field nobody touched but the browser still
+ * round-tripped) can never leak into the request. */
+function changedSettings() {
+  const patch = {};
+  for (const key of Object.keys(settingsDraft)) {
+    if (settingsDraft[key] !== settingsBaseline[key]) patch[key] = settingsDraft[key];
+  }
+  return patch;
+}
+
+async function saveSettings() {
+  const patch = changedSettings();
+  if (Object.keys(patch).length === 0) {
+    await showDeckList();
+    return;
+  }
+  const result = await api("/sync/settings", { method: "POST", body: JSON.stringify(patch) });
+  if (!result.ok) {
+    document.getElementById("edit-errors").textContent = result.errors.join("; ");
+    return;
+  }
+  await showDeckList();
+  showNotice("Settings saved");
+}
+
+// ---------------------------------------------------------------------------
 // Review
 // ---------------------------------------------------------------------------
 
@@ -283,6 +436,7 @@ async function enterDeck(deck) {
   backBtn.hidden = false;
   scanLink.hidden = true;
   addLink.hidden = true;
+  settingsLink.hidden = true;
   titleEl.textContent = deck;
 
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;

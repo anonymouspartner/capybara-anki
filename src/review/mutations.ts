@@ -17,7 +17,7 @@
 import { applyReview, type CardSeed } from "../fsrs/replay.ts";
 import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD, isLeechAt, type LeechAction } from "./leech.ts";
 import type { FsrsCardState, FsrsSchedulerParams } from "../fsrs/types.ts";
-import type { CardKind, CardStateRow, NoteRow, ReviewInput, ReviewRow } from "./types.ts";
+import type { CardKind, CardStateRow, NoteRow, ReviewInput, ReviewRow, SchedulerConfigRow } from "./types.ts";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -238,6 +238,86 @@ export function validateNoteEdit(patch: Partial<Omit<NoteRow, "id">>): NoteEditR
   }
   if ("language" in patch && patch.language !== "uk" && patch.language !== "en") {
     errors.push(`language must be 'uk' or 'en', got ${JSON.stringify(patch.language)}`);
+  }
+
+  return errors.length > 0 ? { valid: false, errors } : { valid: true, errors: [], patch };
+}
+
+/** The fields the settings screen (Phase 5.3) can change — the "SQL-only" gap
+ * §4's table named: daily limits, retention, rollover, timezone, leech
+ * threshold/action. Deliberately excludes `fsrsParams`/`maxInterval`/
+ * `learningSteps`: nothing in §4 asked for those to become editable, and a
+ * mistyped weight vector is a much sharper edge than a mistyped limit. */
+export type SettingsPatch = Partial<
+  Pick<
+    SchedulerConfigRow,
+    | "dailyNewLimit"
+    | "dailyReviewLimit"
+    | "desiredRetention"
+    | "timeZone"
+    | "rolloverHour"
+    | "leechThreshold"
+    | "leechAction"
+  >
+>;
+
+export interface SettingsEditResult {
+  valid: boolean;
+  errors: string[];
+  /** Only present when `valid` — same "never write something that failed
+   * validation" rule as `NoteEditResult.patch`. */
+  patch?: SettingsPatch;
+}
+
+/** Sanity bound on a time zone string, not a real IANA-name validator — the
+ * actual check is handing it to `Intl` and seeing whether it throws. */
+const TIME_ZONE_MAX_LENGTH = 64;
+
+/**
+ * Validates a settings-screen submission. Field hygiene only, same spirit as
+ * `validateNoteEdit`: catches a value that would corrupt scheduling (a
+ * retention outside FSRS's valid range, a rollover hour that isn't a real
+ * hour) rather than second-guessing a deliberate choice (a daily limit of 0 is
+ * a real thing to want — it means "review nothing new today").
+ */
+export function validateSettingsEdit(patch: SettingsPatch): SettingsEditResult {
+  const errors: string[] = [];
+
+  if ("dailyNewLimit" in patch && !(Number.isInteger(patch.dailyNewLimit) && patch.dailyNewLimit! >= 0)) {
+    errors.push("daily new limit must be a whole number, 0 or more");
+  }
+  if ("dailyReviewLimit" in patch && !(Number.isInteger(patch.dailyReviewLimit) && patch.dailyReviewLimit! >= 0)) {
+    errors.push("daily review limit must be a whole number, 0 or more");
+  }
+  if (
+    "desiredRetention" in patch &&
+    !(typeof patch.desiredRetention === "number" && patch.desiredRetention > 0 && patch.desiredRetention < 1)
+  ) {
+    errors.push("desired retention must be a number between 0 and 1 (exclusive)");
+  }
+  if (
+    "rolloverHour" in patch &&
+    !(Number.isInteger(patch.rolloverHour) && patch.rolloverHour! >= 0 && patch.rolloverHour! <= 23)
+  ) {
+    errors.push("rollover hour must be a whole number between 0 and 23");
+  }
+  if ("leechThreshold" in patch && !(Number.isInteger(patch.leechThreshold) && patch.leechThreshold! >= 0)) {
+    errors.push("leech threshold must be a whole number, 0 or more (0 disables the check)");
+  }
+  if ("leechAction" in patch && patch.leechAction !== "tag" && patch.leechAction !== "suspend") {
+    errors.push(`leech action must be 'tag' or 'suspend', got ${JSON.stringify(patch.leechAction)}`);
+  }
+  if ("timeZone" in patch && patch.timeZone !== null) {
+    const zone = patch.timeZone;
+    if (typeof zone !== "string" || zone.trim() === "" || zone.length > TIME_ZONE_MAX_LENGTH) {
+      errors.push("time zone must be a non-empty IANA zone name, or null for UTC");
+    } else {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: zone });
+      } catch {
+        errors.push(`'${zone}' is not a recognized time zone`);
+      }
+    }
   }
 
   return errors.length > 0 ? { valid: false, errors } : { valid: true, errors: [], patch };
