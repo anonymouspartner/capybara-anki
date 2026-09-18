@@ -1,8 +1,10 @@
 # Migration — retiring AnkiDroid
 
-**Status: Phase 0.1 done, gate passed. Written 2026-09-18, against the live
-database and two real exports — every number below was measured, not
-estimated. See the Appendix for how to re-measure any of them.**
+**Status: Phase 0.1 done, gate passed. Phase 1 done, live. Phase 2/3's loader is
+built and verified against the real recovery export; the load itself is the one
+step left to a maintainer, since it needs the service-role key (§6.3). Written
+2026-09-18, against the live database and two real exports — every number below
+was measured, not estimated. See the Appendix for how to re-measure any of them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -14,10 +16,13 @@ uninstalled**, and the list of things that are not true yet but have to be first
 
 - The app is live, both people are reviewing in it, and the reviewer itself is in
   good shape. That is not what stands in the way.
-- **AnkiDroid currently holds the only copy of 248 notes, 799 reviews and 248 FSRS
-  memory states.** They were discarded at load time by a unique constraint that
-  exists for the bot's benefit and is wrong for an imported collection (§2.1).
-  ~19% of the notes, ~17% of the history.
+- **AnkiDroid held the only copy of 248 notes, 799 reviews and 248 FSRS memory
+  states**, discarded at load time by a unique constraint that exists for the
+  bot's benefit and was wrong for an imported collection (§2.1). ~19% of the
+  notes, ~17% of the history. **Fixed 2026-09-18** (§6.3): the constraint is
+  rescoped and live, and the recovery data is loadable by a maintainer-run
+  script (`migration/load_recovery.py`) — the load itself hadn't run as of this
+  writing.
 - **There was no way to get data back out of this app.** §2.3 of DESIGN.md
   promises an `.apkg` escape hatch "kept forever". That promise was false (§2.2)
   — **fixed 2026-09-18** (§6.2, Phase 0.1): `migration/export_apkg.py` now
@@ -29,9 +34,9 @@ uninstalled**, and the list of things that are not true yet but have to be first
   is no.
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
-- Once those are fixed the remaining work is real but bounded: a merge-shaped
-  loader (§5, Phase 2), one re-migration (Phase 3), four fidelity gaps (Phase 4),
-  and four parity features (Phase 5).
+- Once the recovery load actually runs, the remaining work is real but bounded:
+  four fidelity gaps (Phase 4) and four parity features (Phase 5) before the
+  cutover itself (Phase 6).
 
 ---
 
@@ -93,7 +98,7 @@ see §8.
 
 ## 2. What blocks a full migration
 
-### 2.1 🔴 248 notes and 799 reviews exist only on the phone
+### 2.1 🟢 248 notes and 799 reviews exist only on the phone — fixed 2026-09-18, §6.3
 
 `anki_notes` carries:
 
@@ -288,36 +293,42 @@ Sequenced so that **the way out is built before we walk further in.**
 round trip through the real 2026-09-18 export, byte-for-byte, not a synthetic
 stand-in.
 
-### Phase 1 — Make a faithful import representable
+### Phase 1 — Make a faithful import representable — done, 2026-09-18
 
 | | Work |
 |---|---|
-| 1.1 | **Rescope the unique constraint.** Drop `anki_notes_lemma_pos_language_key`; replace with a partial unique index `WHERE source <> 'anki-import'`, so bot and scan captures still dedupe against each other while imported twins coexist. If accepted this belongs in `DESIGN.md` §3 as a new decision. |
-| 1.2 | **Give the bot an explicit pre-check.** `/learn` currently relies on that constraint to avoid re-adding a word you already have. Once it is scoped, the check has to be a real query — "is this word already a note, from any source?" — not a database error being swallowed. |
+| 1.1 | **Rescope the unique constraint. Done, live.** `20260918120000_scope_dedup_key_to_captured_notes.sql` drops `anki_notes_lemma_pos_language_key` and replaces it with a partial unique index `WHERE source <> 'anki-import'` — bot and scan captures still dedupe against each other, imported twins coexist. Verified against live data before applying: 0 collisions among the 13 existing non-import rows, so nothing needed cleaning up first. |
+| 1.2 | **Give the bot an explicit pre-check.** Still open — tracked as follow-up work in `capybara-bot`, not this repo. `/learn` currently relies on the (now-rescoped) constraint; it needs a real "is this word already a captured note?" query instead. |
 
-### Phase 2 — Rewrite the loader as a merge
+### Phase 2/3 — Recover the lost data — loader done, 2026-09-18; load not yet run
 
-Promote `scratch/load_to_postgres.py` into a tested `migration/load.py`:
+The general-purpose "rewrite the loader as a merge" tool originally scoped here
+turned out to be more than the actual problem needed. `cli.py` already keys
+notes on `anki_guid` (via `note_uuid`, deterministic — the same GUID always
+produces the same id) and already derives review ids deterministically from the
+Anki revlog id (§7.2), so **re-running the existing CLI against a fresh export is
+already idempotent** — no new merge logic required for that part.
 
-- **Key notes on `anki_guid`**, cards on `(anki_guid, card_kind)` — the real
-  identity, the one §7.2 already named
-- **Derive review ids deterministically** from the Anki revlog id, so a re-run is
-  a no-op instead of a duplicate
-- **Never drop a row.** Anything unplaceable goes into a report, loudly. The
-  current silent-drop behaviour is what produced §2.1.
-- **Never regress `card_state`.** If the app's state is newer than the export's,
-  the app wins — reviews made here since 2026-09-16 must not be rolled back
+What was actually missing was a *loader*: something to get `cli.py`'s JSON
+output into Postgres without silently dropping or overwriting anything. That's
+`migration/load_recovery.py` — maintainer-run (service-role key, same reasoning
+as `upload_pronunciation_audio.py`), and it satisfies every property this phase
+asked for:
+
+- **Never drops a row** — every row in the export is sent
+- **Never regresses `card_state` or reviews** — loads with `Prefer:
+  resolution=ignore-duplicates`, so any row already in the table (including
+  everything reviewed in-app since 2026-09-16) is left untouched, never
+  overwritten by the export
 - **Service role**, not the anon key
-- **`--dry-run` that prints the whole diff** before anything is written
-
-### Phase 3 — Re-migrate for real
+- **`--dry-run`** reports exact row counts before anything is sent
 
 | | Work |
 |---|---|
-| 3.1 | Fresh full-collection export (see §6 on how many phones) |
-| 3.2 | Dry-run → read the diff → load. Recovers the 248 notes, 799 reviews, 248 memory states |
-| 3.3 | Reconcile the 2026-09-12 → cutover window: AnkiDroid's reviews merge in, the app's stay |
-| 3.4 | **Verify by replay.** For a sample of cards, fold the merged log and assert the result matches what Anki itself reports. This is precisely the check §4.3's "card_state is a cache" design was built to make possible — this is the moment it earns its keep. |
+| 3.1 | Fresh full-collection export. **Done** — the 2026-09-18 colpkg, re-run through `cli.py`, sitting at `scratch/recovery/*.json` (1287 notes, 1531 card_states, 4615 reviews). |
+| 3.2 | Load it. **Not yet run** — needs the maintainer's service-role key: `python -m migration.load_recovery scratch/recovery --user-id tim=<real UUID>`. As of this writing the live tables are partially loaded (1053/1287 notes, 1281/1531 card_states, 3922/4615 reviews) from manual recovery batches applied before this tool existed; `ignore-duplicates` makes re-running the loader safe regardless of that partial state. |
+| 3.3 | Reconcile the 2026-09-12 → cutover window. **Already satisfied by construction** — every in-app review since 2026-09-16 has an id `cli.py` cannot reproduce from the Anki export, so `ignore-duplicates` keeps them automatically; there is no separate reconciliation step to write. |
+| 3.4 | **Verify by replay.** Still open, once 3.2 runs: for a sample of cards, fold the merged log and assert the result matches what Anki itself reports. |
 
 ### Phase 4 — Fidelity
 
@@ -452,6 +463,36 @@ is happy with the file, or that the (intentionally minimal) card templates
 render sensibly. That's a five-minute manual check, not a re-open of Phase 0.1,
 and it's the one item in §7's checklist below still unticked.
 
+### 6.3 Phase 1/2/3, verified
+
+**Phase 1 (the constraint).** Before applying the rescoped index, queried the
+live `anki_notes` for `source <> 'anki-import'` rows grouped by `(lemma,
+part_of_speech, language)`: 13 rows, 0 groups with more than one row. A
+partial index over a strict subset of what a broader constraint already
+allowed cannot discover a new violation, so this was safe to apply with no
+pre-cleanup — confirmed after applying, too (`pg_constraint`/`pg_indexes`
+shows the old constraint gone, the new partial index present).
+
+**Phase 2/3 (the recovery loader).** `migration/load_recovery.py` was
+dry-run against the real `scratch/recovery/` export and reports the expected
+counts (1287/1531/4615) with the `tim` placeholder resolving to a real
+`users.id`. It has not yet been run for real — that step needs the
+maintainer's service-role key.
+
+What actually loaded the ~1,050/1,280/3,920 rows the live tables hold as of
+this writing: an earlier attempt at this same recovery, done by reading each
+`recovery_sql/*.sql` batch file and retyping its contents into direct SQL
+calls, before `load_recovery.py` existed. That approach is called out here
+rather than just quietly abandoned, because it surfaced something worth
+recording: two of those manual batches produced a transcription error in
+~250 rows handled that way (a mis-copied UUID, a fabricated GUID character) —
+both happened to violate a database constraint and got caught immediately,
+but a plausible variant (a mistyped word inside real message content) would
+have inserted cleanly and corrupted the corpus with no error at all. That
+risk, not just the effort, is why the remaining rows are `load_recovery.py`'s
+job instead: a mechanical JSON→PostgREST load has no transcription step to
+get wrong.
+
 ---
 
 ## 7. What "done" looks like
@@ -459,8 +500,9 @@ and it's the one item in §7's checklist below still unticked.
 Falsifiable, so this cannot be declared finished on vibes:
 
 1. Every note in a fresh export exists in `anki_notes`, matched by GUID. Count
-   equal, zero unmatched.
-2. Every revlog entry exists in `anki_reviews`. Count equal.
+   equal, zero unmatched. **Loader ready (§6.3) — not yet run for real.**
+2. Every revlog entry exists in `anki_reviews`. Count equal. **Same loader,
+   same status.**
 3. For a sample of cards, replaying the log reproduces Anki's own reported
    interval and due date.
 4. `/export` produces an `.apkg` that imports into a clean Anki install with
