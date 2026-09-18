@@ -177,6 +177,16 @@ export async function getStats(
   return computeStats(reviews, cardCounts, now, days, dayBoundary(config));
 }
 
+/** GET every pronunciation note's (D18) reference audio URL — the offline
+ * audio cache's (Phase 5.4) manifest. The service worker fetches this once
+ * per page load and hands the result to its own 'cache-audio' message
+ * handler (sw.js), which skips whatever it already has cached, so calling
+ * this often is cheap by construction on the client side; the query itself
+ * stays small regardless (190 rows on the real collection, not thousands). */
+export async function getAudioManifest(store: Store, userId: string): Promise<string[]> {
+  return store.getPronunciationAudioUrls(userId);
+}
+
 export class NotFoundError extends Error {}
 
 const SIBLING_KIND: Record<CardKind, CardKind> = { recall: "spelling", spelling: "recall" };

@@ -1061,6 +1061,28 @@ function renderPronunciationReview(note) {
 
 // ---------------------------------------------------------------------------
 
+/** Phase 5.4: hands the service worker every pronunciation note's (D18)
+ * reference audio URL so it can fetch-and-cache all of it in the background
+ * — see sw.js's own 'cache-audio' message handler, which does the actual
+ * fetching and skips whatever it already has. Fire-and-forget on purpose:
+ * nothing in the review flow waits on this, so a slow network only delays
+ * offline *availability* of some cards' audio, never blocks a session.
+ * `navigator.serviceWorker.ready` (not `.controller`) is what to await here
+ * — on the very first-ever load the worker installs and calls
+ * `clients.claim()`, but this exact page load isn't `.controller`-ed until
+ * that resolves; `.ready` is the promise that actually tracks it. */
+async function cacheAudioOffline() {
+  if (!navigator.onLine) return;
+  const registration = await navigator.serviceWorker.ready;
+  if (!registration.active) return;
+  try {
+    const urls = await api("/sync/audio-manifest");
+    registration.active.postMessage({ type: "cache-audio", urls });
+  } catch (e) {
+    console.error("audio manifest fetch failed", e);
+  }
+}
+
 async function main() {
   initTelegram();
   captureTokenFromUrl();
@@ -1069,7 +1091,9 @@ async function main() {
     return;
   }
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch((e) => console.error("sw registration failed", e));
+    navigator.serviceWorker.register("./sw.js")
+      .then(() => cacheAudioOffline())
+      .catch((e) => console.error("sw registration failed", e));
   }
   if (navigator.onLine) await flushPendingReviews(); // queued from a previous offline stretch
   await showDeckList();

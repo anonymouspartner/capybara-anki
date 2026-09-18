@@ -51,6 +51,10 @@
  *                                    threshold/action (handlers.ts's getSettings)
  *   POST   /sync/settings         → a partial SettingsPatch — only the fields
  *                                    being changed (handlers.ts's updateSettings)
+ *   GET    /sync/audio-manifest   → every pronunciation note's (D18) reference
+ *                                    audio URL, for the service worker to cache
+ *                                    offline (Phase 5.4, handlers.ts's
+ *                                    getAudioManifest)
  *
  * Auth (D13, §4.5): a bearer token, one per person, read from `Deno.env.get` —
  * never hardcoded, never logged. `TIM_TOKEN`/`VIKA_TOKEN` name whose is whose;
@@ -68,6 +72,7 @@ import {
   buryCard,
   deleteNote,
   editNote,
+  getAudioManifest,
   getDeckSummaries,
   getDueQueueWithPreviews,
   getSettings,
@@ -130,6 +135,10 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
     const body = await req.json();
     const result = await updateSettings(store, userId, body);
     return json(result, result.ok ? 200 : 400);
+  }
+
+  if (req.method === "GET" && url.pathname === "/sync/audio-manifest") {
+    return json(await getAudioManifest(store, userId));
   }
 
   if (req.method === "POST" && url.pathname === "/sync/review") {

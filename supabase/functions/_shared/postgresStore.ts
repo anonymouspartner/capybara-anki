@@ -346,6 +346,25 @@ export class PostgresStore implements Store {
     return [...decks];
   }
 
+  /** Phase 5.4's manifest source — every pronunciation note's audio URL,
+   * paged the same way getDecks is (nothing here is bounded by user, so a
+   * single language or deck's row count is no ceiling on this one either). */
+  async getPronunciationAudioUrls(_userId: string): Promise<string[]> {
+    const urls: string[] = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_notes")
+        .select("audio_url")
+        .eq("kind", "pronunciation")
+        .not("audio_url", "is", null)
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getPronunciationAudioUrls: ${error.message}`);
+      for (const row of data ?? []) urls.push(row.audio_url as string);
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
+    return urls;
+  }
+
   async getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]> {
     // Same day-key pattern as getDailyCounts below, and for the same reason:
     // "still buried" is "buried on today's ankiDayKey," never an instant
