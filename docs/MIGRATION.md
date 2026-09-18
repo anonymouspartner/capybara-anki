@@ -2,9 +2,10 @@
 
 **Status: Phase 0.1 done, gate passed. Phase 1 done, live. Phase 2/3's loader is
 built and verified against the real recovery export; the load itself is the one
-step left to a maintainer, since it needs the service-role key (§6.3). Written
-2026-09-18, against the live database and two real exports — every number below
-was measured, not estimated. See the Appendix for how to re-measure any of them.**
+step left to a maintainer, since it needs the service-role key (§6.3). Phase 4
+done except 4.3 (daily limits), deliberately deferred. Written 2026-09-18,
+against the live database and two real exports — every number below was
+measured, not estimated. See the Appendix for how to re-measure any of them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -35,8 +36,9 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
 - Once the recovery load actually runs, the remaining work is real but bounded:
-  four fidelity gaps (Phase 4) and four parity features (Phase 5) before the
-  cutover itself (Phase 6).
+  one deferred fidelity decision (daily limits, §3.3) and four parity features
+  (Phase 5) before the cutover itself (Phase 6). The other four fidelity gaps
+  (§3.1, 3.2, 3.4, 3.5) are done as of 2026-09-18.
 
 ---
 
@@ -142,7 +144,7 @@ The loader's own docstring says all of this out loud. It was an honest trade for
 **parallel run** (D15), where AnkiDroid still held everything. It is disqualifying
 for a **cutover**, where nothing else will.
 
-### 2.2 🔴 There is no escape hatch
+### 2.2 🟢 There is no escape hatch — fixed 2026-09-18, §6.2
 
 `DESIGN.md` §2.3, "Kept forever":
 
@@ -151,19 +153,22 @@ for a **cutover**, where nothing else will.
 > collection can be exported back into real Anki, this project is never a bet that
 > cannot be walked back.
 
-This is currently false for the collection this app owns:
+This was false for the collection this app owns, as of when this section was
+first written:
 
 - The bot's `/export` builds its CSV from `flashcards` — capybara-bot's own table.
   It has never read `anki_notes`.
 - The `.apkg` writer lives in `ukrainian-anki-scanner`, and is fed by that repo's
   own pipeline, not by this database.
-- Nothing in `capybara-anki` writes a file of any kind. There is no `/export`, no
+- Nothing in `capybara-anki` wrote a file of any kind. There was no `/export`, no
   backup job, no dump.
 
-So the escape hatch exists for the *bot's* word list and not for the **migrated
-collection with three months of scheduling state in it**. Uninstalling AnkiDroid
-before fixing this converts a reversible bet into an irreversible one, which is
-exactly what §2.3 was written to prevent.
+So the escape hatch existed for the *bot's* word list and not for the
+**migrated collection with three months of scheduling state in it**.
+Uninstalling AnkiDroid before fixing this would have converted a reversible
+bet into an irreversible one — exactly what §2.3 was written to prevent.
+**Fixed** by Phase 0.1: `migration/export_apkg.py` now writes a real,
+verified `.apkg` straight from the live `anki_*` tables.
 
 ### 2.3 🟡 The review log has one author
 
@@ -207,35 +212,42 @@ tool for the cutover.
 risk, mitigated by porting all five config values. All five *are* ported. These
 are the gaps that survived anyway.
 
-### 3.1 The two apps run different FSRS versions
+### 3.1 🟢 The two apps run different FSRS versions — fixed 2026-09-18
 
 The collection stores its parameter vector under the key **`fsrsParams6`** —
-FSRS-6, 21 weights. This repo pins **`ts-fsrs@4.7.1`**, whose default vector is
-**19 weights** — FSRS-5. Verified directly rather than inferred from the version
-string.
+FSRS-6, 21 weights. This repo pinned **`ts-fsrs@4.7.1`**, whose default vector
+was **19 weights** — FSRS-5. Verified directly rather than inferred from the
+version string.
 
-This is softened by something §7.3 already found: the vector is **empty** — FSRS
-is on but Optimize has never been run — so *both* sides are running built-in
-defaults rather than personalized weights. But they are different defaults from
-different algorithm generations, so intervals will diverge systematically rather
-than randomly.
+This was softened by something §7.3 already found: the vector is **empty** —
+FSRS is on but Optimize has never been run — so *both* sides ran built-in
+defaults rather than personalized weights. But they were different defaults
+from different algorithm generations, so intervals diverged systematically
+rather than randomly.
 
-Not urgent, not invisible. Fixed by upgrading the scheduler (§5, Phase 4).
+**Fixed:** bumped to `ts-fsrs@^5.4` (current stable — no beta needed).
+Verified directly that its default weight vector is genuinely 21 values and
+every API this codebase uses is unchanged.
 
-### 3.2 `learning_steps` is migrated, stored, and never used
+### 3.2 🟢 `learning_steps` is migrated, stored, and never used — fixed 2026-09-18
 
 `learning_steps` is read from the collection, written to `anki_scheduler_config`,
-mapped through `SchedulerConfigRow`, carried into `PostgresStore` — and consumed
-by nothing. No scheduling code reads it.
+mapped through `SchedulerConfigRow`, carried into `PostgresStore` — and was
+consumed by nothing. No scheduling code read it.
 
-Today's behaviour is nonetheless correct, by coincidence: ts-fsrs's own defaults
-for a new card are Again 1m / Hard 5m / Good 10m, and the collection's configured
-steps are `[1, 10]`. Verified directly.
+That behaviour was nonetheless correct, by coincidence: ts-fsrs's own defaults
+for a new card were Again 1m / Hard 5m / Good 10m, and the collection's
+configured steps are `[1, 10]`. Verified directly.
 
-The hazard is that it *looks* configured. Changing the value changes nothing, and
-the next person to read this code will reasonably assume otherwise. Either wire it
-up or delete the column and say ts-fsrs owns it — the current state is the worst
-of the three.
+**Fixed:** the ts-fsrs 5.x upgrade (§3.1) added a real per-card (re)learning-step
+counter and a first-class `learning_steps` config API, so wiring this up became
+the natural extension of that upgrade rather than a separate decision. Now
+end to end: `FsrsCardState.learningStep` round-trips through `replay.ts`
+(required to correctly resume a card mid-steps), a new
+`anki_card_state.learning_step` column carries it through Postgres, and
+`FsrsSchedulerParams.learningSteps` distinguishes `null` (never configured →
+ts-fsrs's own default) from a real `[]` (Anki's own "FSRS manages timing"
+convention).
 
 ### 3.3 Daily limits are per-deck, not per-collection
 
@@ -244,17 +256,18 @@ of the three.
 documented in `store.ts`, and it was harmless while the app was a supplement. At
 full volume it is a 5× difference in how much work a day asks for.
 
-### 3.4 The two people have different day boundaries
+### 3.4 🟢 The two people have different day boundaries — fixed 2026-09-18
 
-`rollover_hour` is 4 for both, but one `time_zone` is `America/New_York` and the
-other is **NULL**, which `day.ts` treats as UTC. So one person's study day rolls
-over at 4am local and the other's at midnight local. One `UPDATE`.
+`rollover_hour` is 4 for both, but one `time_zone` was `America/New_York` and the
+other was **NULL**, which `day.ts` treats as UTC. So one person's study day
+rolled over at 4am local and the other's at midnight local. **Fixed:** Vika's
+`time_zone` is now `Europe/Kyiv`, one `UPDATE`.
 
-### 3.5 `20260917100000_leech_settings.sql` is unapplied
+### 3.5 🟢 `20260917100000_leech_settings.sql` is unapplied — fixed 2026-09-18
 
-Behaviour is correct — `schedulerConfigFromRow` falls back to Anki's own defaults
-when the columns are absent, exactly as designed. Worth applying anyway so the
-repo and the database stop disagreeing.
+Behaviour was correct either way — `schedulerConfigFromRow` falls back to
+Anki's own defaults when the columns are absent, exactly as designed.
+**Applied live** so the repo and the database stop disagreeing.
 
 ---
 
@@ -330,11 +343,15 @@ asked for:
 | 3.3 | Reconcile the 2026-09-12 → cutover window. **Already satisfied by construction** — every in-app review since 2026-09-16 has an id `cli.py` cannot reproduce from the Anki export, so `ignore-duplicates` keeps them automatically; there is no separate reconciliation step to write. |
 | 3.4 | **Verify by replay.** Still open, once 3.2 runs: for a sample of cards, fold the merged log and assert the result matches what Anki itself reports. |
 
-### Phase 4 — Fidelity
+### Phase 4 — Fidelity — done except 4.3, 2026-09-18
 
-4.1 Upgrade to an FSRS-6-capable scheduler · 4.2 Wire up or delete
-`learning_steps` · 4.3 Decide per-deck vs per-collection limits · 4.4 Set the
-missing timezone · 4.5 Apply the leech migration
+| | Work |
+|---|---|
+| 4.1 | Upgrade to an FSRS-6-capable scheduler. **Done** — `ts-fsrs@^5.4`, verified 21-weight default vector. |
+| 4.2 | Wire up or delete `learning_steps`. **Done** — wired up (§3.2); the ts-fsrs upgrade made this the natural extension of 4.1, not a separate change. |
+| 4.3 | Decide per-deck vs per-collection daily limits. **Still open, deliberately deferred.** |
+| 4.4 | Set the missing timezone. **Done** — Vika's `time_zone` is now `Europe/Kyiv`. |
+| 4.5 | Apply the leech migration. **Done**, applied live. |
 
 ### Phase 5 — Parity
 
@@ -492,6 +509,49 @@ have inserted cleanly and corrupted the corpus with no error at all. That
 risk, not just the effort, is why the remaining rows are `load_recovery.py`'s
 job instead: a mechanical JSON→PostgREST load has no transcription step to
 get wrong.
+
+### 6.4 Phase 4, verified
+
+**3.1/3.2 (FSRS-6 + learning_steps).** `npm view ts-fsrs versions` showed
+5.4.2 as the latest stable release (6.0.0 only exists as a beta line) —
+installed it locally and printed `generatorParameters({ w: [] }).w.length`:
+21, confirming FSRS-6 defaults without needing a beta dependency. Every
+export `replay.ts` imports (`createEmptyCard`, `FSRS`, `fsrs`,
+`generatorParameters`, `StrategyMode`) is still present in 5.4.2.
+
+The upgrade's stricter `Card` type (`learning_steps: number`, no longer
+optional) is what surfaced 3.2 as work rather than a separate decision: ts-fsrs
+5.0 added a real per-card (re)learning-step counter, so there was a right
+place to plumb the already-stored `anki_scheduler_config.learning_steps`
+through rather than stubbing the new required field with a constant. Checked
+directly, empirically, before writing the config-plumbing code:
+
+- `generatorParameters({ learning_steps: [] })` → a card graduates straight
+  to Review on the first Good. This is Anki's own convention for "no
+  short-term steps, FSRS manages timing" (its JSDoc says so explicitly), not
+  a degenerate case — so a real, stored `[]` has to be passed through as-is,
+  distinct from...
+- `generatorParameters({})` (key omitted) → ts-fsrs's own built-in default
+  (`1m, 10m`) applies. This is what a `NULL` `learning_steps` column (never
+  configured) should fall back to — conflating it with a real `[]` would
+  make every not-yet-migrated user look like they'd deliberately turned
+  learning steps off.
+
+One existing test broke from this upgrade, and the fix needed a real
+measurement, not a type patch: `fuzz spreads cards answered together across
+different days` graduated a card with two Goods and asserted the resulting
+date spread under a per-card fuzz seed. Reproduced directly: under the old
+FSRS-5 defaults (ts-fsrs 4.7.1) two Goods graduated to a 4-day interval;
+under FSRS-6 defaults, exactly 2.0 days — landing precisely on Anki's own
+"nothing under 2.5 days gets fuzzed" boundary (confirmed against
+`rslib/src/scheduler/states/fuzz.rs`, the same source §5, Phase 2's fuzz
+implementation was checked against). Three Goods clears it reliably
+(verified: 11 days), so that's what the test now does — the interval shift
+itself is real and expected under this phase, not a bug to route around.
+
+**3.4/3.5 (timezone, leech).** Both were single, low-risk writes — a `real[]`
+default-adding migration already written and reviewed, and one `UPDATE` to a
+factual field — applied live and verified by reading the row back.
 
 ---
 
