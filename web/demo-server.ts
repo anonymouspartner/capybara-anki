@@ -21,6 +21,7 @@ import {
   buryCard,
   deleteNote,
   editNote,
+  getAudioManifest,
   getDeckSummaries,
   getDueQueueWithPreviews,
   getSettings,
@@ -109,7 +110,11 @@ const demoNotes: NoteRow[] = [
     id: "demo-7", lemma: "Доброго ранку", gloss: "a morning greeting", lemmaTranslation: "Good morning",
     partOfSpeech: null, language: "uk", deck: "Pronunciation",
     example: null, exampleTranslation: null,
-    audioUrl: null, kind: "pronunciation", hasSpelling: false,
+    // Not real audio, and not from the corpus — a byte string this server
+    // itself serves back at /demo-audio/sample.mp3 (below), just so Phase 5.4's
+    // offline-caching pass (sw.js's 'cache-audio' message handler) has one
+    // real, same-origin URL to actually fetch and cache when this demo runs.
+    audioUrl: "/demo-audio/sample.mp3", kind: "pronunciation", hasSpelling: false,
   },
 ];
 for (const note of demoNotes) store.notes.set(note.id, note);
@@ -175,6 +180,16 @@ Deno.serve({ port: 8787 }, async (req) => {
   // "/scan/" (trailing slash), not a bare "/scan" prefix — "/scan.html"/"/scan.js"
   // are static files this same check would otherwise wrongly route into the
   // auth-gated API branch below (caught by curling them directly, not by eye).
+  //
+  // Same reasoning applies to Phase 5.4's stand-in reference audio: a real
+  // ReferenceAudio file is public-read in production too (D23: a plain
+  // <audio src> sends no Authorization header), so this serves it before the
+  // auth gate below rather than requiring a token the real bucket never asks
+  // for either.
+  if (url.pathname === "/demo-audio/sample.mp3") {
+    return new Response(new Uint8Array([0, 0, 0, 0]), { headers: { "content-type": "audio/mpeg" } });
+  }
+
   const apiPrefixes = ["/sync/", "/scan/", "/pronounce/"];
   if (!apiPrefixes.some((p) => url.pathname.startsWith(p))) {
     return serveStatic(url.pathname);
@@ -242,6 +257,9 @@ Deno.serve({ port: 8787 }, async (req) => {
   if (req.method === "POST" && url.pathname === "/sync/settings") {
     const result = await updateSettings(store, DEMO_USER, await req.json());
     return json(result, result.ok ? 200 : 400);
+  }
+  if (req.method === "GET" && url.pathname === "/sync/audio-manifest") {
+    return json(await getAudioManifest(store, DEMO_USER));
   }
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();

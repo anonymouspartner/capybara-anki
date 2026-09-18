@@ -4,6 +4,7 @@ import {
   buryCard,
   deleteNote,
   editNote,
+  getAudioManifest,
   getDeckSummaries,
   getDueQueue,
   getDueQueueWithPreviews,
@@ -255,6 +256,18 @@ Deno.test("updateSettings: an invalid patch is rejected and never reaches the st
   assertNotEquals(result.errors, undefined);
   const config = await store.getSchedulerConfig("tim");
   assertEquals(config.rolloverHour, 4); // never written
+});
+
+Deno.test("getAudioManifest: every pronunciation note's audio URL, and nothing else", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "n1", { kind: "vocab", audioUrl: null });
+  seedNote(store, "n2", { kind: "pronunciation", audioUrl: "https://example.com/a.mp3" });
+  seedNote(store, "n3", { kind: "pronunciation", audioUrl: "https://example.com/b.mp3" });
+  // A pronunciation note with no audio yet (not uploaded, D23) contributes
+  // nothing — the manifest can only ever list URLs that actually exist.
+  seedNote(store, "n4", { kind: "pronunciation", audioUrl: null });
+  const urls = await getAudioManifest(store, "tim");
+  assertEquals(new Set(urls), new Set(["https://example.com/a.mp3", "https://example.com/b.mp3"]));
 });
 
 Deno.test("deleteNote: removes the note, its card_state, and its reviews", async () => {

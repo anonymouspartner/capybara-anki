@@ -58,6 +58,12 @@ export interface Store {
   /** Every deck name with at least one note this user can review — the deck-list
    * screen's row set. */
   getDecks(userId: string): Promise<string[]>;
+  /** Every pronunciation note's (D18) reference audio URL, for the offline
+   * audio cache (Phase 5.4) to hand the service worker — one shared list, not
+   * scoped by `userId`, same "doesn't model per-user access" shape `getDecks`
+   * already has: the collection is shared (postgresStore.ts's own docstring),
+   * so both people's due queues eventually need every one of these files. */
+  getPronunciationAudioUrls(userId: string): Promise<string[]>;
   /** Every card this user's due queue could possibly include, optionally narrowed
    * to one deck (undefined = every deck combined) — one entry per note, plus a
    * second `cardKind: 'spelling'` entry for each note with `hasSpelling` (D17).
@@ -182,6 +188,14 @@ export class InMemoryStore implements Store {
       if (note.hasSpelling) decks.add(SPELLING_DECK);
     }
     return Promise.resolve([...decks]);
+  }
+
+  getPronunciationAudioUrls(_userId: string): Promise<string[]> {
+    const urls: string[] = [];
+    for (const note of this.notes.values()) {
+      if (note.kind === "pronunciation" && note.audioUrl) urls.push(note.audioUrl);
+    }
+    return Promise.resolve(urls);
   }
 
   getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]> {

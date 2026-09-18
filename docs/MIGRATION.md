@@ -36,10 +36,9 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
 - Once the recovery load actually runs, the remaining work is real but bounded:
-  one deferred fidelity decision (daily limits, §3.3) and one parity feature
-  (5.4, caching pronunciation audio offline) before the cutover itself (Phase 6).
-  The other four fidelity gaps (§3.1, 3.2, 3.4, 3.5) and three of Phase 5's four
-  parity features (5.1-5.3) are done as of 2026-09-18.
+  one deferred fidelity decision (daily limits, §3.3) before the cutover itself
+  (Phase 6). The other four fidelity gaps (§3.1, 3.2, 3.4, 3.5) and all four of
+  Phase 5's parity features are done as of 2026-09-18.
 
 ---
 
@@ -282,7 +281,7 @@ in afterwards.
 | **No bury** 🟢 fixed 2026-09-18 | D12 promised "suspend / bury / delete". Suspend and delete existed; bury was the missing third. Now built: manual bury/unbury (`POST /sync/bury`) plus Anki's automatic "bury siblings" — answering one of a `Capybara+` note's two cards (D17) buries the other until the study day rolls over, no unbury step needed. Stored as `anki_card_state.buried_on`, an `ankiDayKey` (day.ts), not a boolean or an expiry instant — see `src/review/mutations.ts`'s `buildBuryMutation`/`SiblingBury`. |
 | **No way to add a card in the app** 🟢 fixed 2026-09-18 | `createNote` was reachable only from `/scan`. Now also `POST /sync/note` (`handlers.ts`'s `addCard`) and a ➕ screen in the reviewer itself — deck picks itself from language, same convention `/scan` already used. `source: 'app'`, a new fourth provenance value distinct from `'scan'`/`'bot'` (schema migration, `anki_notes_source_check` widened). |
 | **No settings screen** 🟢 fixed 2026-09-18 | Daily limits, retention, rollover, timezone, leech threshold were all SQL-only. Now a ⚙️ screen next to ➕: `GET`/`POST /sync/settings` (`handlers.ts`'s `getSettings`/`updateSettings`), validated the same edit-in-place way as a note (`mutations.ts`'s `validateSettingsEdit`). Deliberately excludes `fsrsParams`/`maxInterval`/`learningSteps` — §4's gap never asked for those to become editable, and nothing about them changed. |
-| **No audio offline** | `sw.js` caches the shell only. Pronunciation cards need the network. |
+| **No audio offline** 🟢 fixed 2026-09-18 | `sw.js` caches the shell only; pronunciation cards needed the network. Now a second cache (`capybara-anki-audio-v1`): `app.js` asks `GET /sync/audio-manifest` once per page load and hands the URL list to the service worker, which fetches and caches whatever it doesn't already have — cheap on every repeat load, since the manifest is the same list far more often than not. Cache-first on match, straight to the network otherwise. **This has nothing to cache yet** — Phase 0.3 (uploading the real audio to Storage) hasn't been run against production, so every one of the 190 pronunciation notes' `audio_url` is still `NULL` live; the manifest returns `[]` until a maintainer runs it, at which point this starts working with no further change. |
 
 That last one closes `DESIGN.md` §11 open question 1, which asked for a size
 estimate before deciding a caching strategy. Measured on the real export: **190
@@ -361,7 +360,7 @@ asked for:
 | 5.1 | Bury. **Done, 2026-09-18** — manual bury/unbury plus automatic bury-siblings (D17). See §4's table and §6.5. |
 | 5.2 | Add-a-card screen. **Done, 2026-09-18.** See §4's table and §6.6. |
 | 5.3 | Settings screen. **Done, 2026-09-18.** See §4's table and §6.7. |
-| 5.4 | Cache all audio in the service worker |
+| 5.4 | Cache all audio in the service worker. **Done, 2026-09-18.** See §4's table and §6.8. |
 
 ### Phase 6 — Cutover
 
@@ -632,6 +631,58 @@ rollover hour shows the inline error and does not navigate away, and
 Cancel after editing a field leaves the stored value untouched. No console
 errors beyond the same (expected, unrelated) Telegram script failure §6.5
 already names.
+
+### 6.8 Phase 5.4 (offline audio), verified
+
+A second Cache Storage cache (`capybara-anki-audio-v1`), separate from the
+shell's, and separately preserved on `activate` — the shell cache name gets a
+version bump whenever its own contents change (`-v6` and counting), and that
+`activate` handler already deletes anything that doesn't match; without
+carving out the audio cache by name too, the next unrelated shell change
+would have silently wiped every cached audio file. `app.js` fetches `GET
+/sync/audio-manifest` once per page load (fire-and-forget — nothing in the
+review flow waits on it) and posts the URL list to the service worker, which
+fetches and caches whatever it doesn't already have. That "skip what's
+already there" check is what makes asking on every single load cheap rather
+than wasteful: the manifest is the same 190 URLs far more often than it
+isn't, so a typical load after the first does zero network requests here,
+not 190.
+
+Why a manifest endpoint rather than deriving the list from `/sync/due`: due
+queues are scoped to what's due *today*, and audio has to be cached before a
+card is due, not after — otherwise the first time a pronunciation card comes
+up offline is exactly when it has no audio yet.
+
+Verified in a real browser (`run` skill): `web/demo-server.ts` gained a
+`/demo-audio/sample.mp3` stand-in — not real audio, not from the corpus, four
+zero bytes served with an `audio/mpeg` content type, existing purely to give
+the demo one real same-origin file to exercise the caching pass end to end
+(the demo server serves its shell and its fake API from one origin, so
+Storage's actual cross-origin path — `isPronunciationAudio`'s `/storage/v1/
+object/public/` match in `sw.js` — isn't reachable through it; verified by
+reading, not by running, since there is nothing this sandbox can stand in for
+Supabase Storage as a second real origin). After loading the demo, a script
+read `caches.keys()`/`cache.keys()` directly and confirmed
+`capybara-anki-audio-v1` existed with the one demo audio URL already cached,
+without ever clicking into the Pronunciation deck — proving the "cache
+proactively, not on first request" property the whole point of this phase.
+Setting the browser context offline and re-`fetch`ing that exact URL through
+the page (which goes through the service worker like any other request)
+returned `200`, confirming the cache actually serves it, not just holds it.
+Opened the Pronunciation deck and screenshotted the card with its `<audio>`
+element present, `src` pointing at the same URL. No console errors beyond the
+same (expected, unrelated) Telegram script failure §6.5 and §6.7 already
+name.
+
+**What this can't verify from here:** the real production audio is not
+uploaded yet — Phase 0.3 (`migration/upload_pronunciation_audio.py`) hasn't
+been run against the live project, so `/sync/audio-manifest` currently
+returns `[]` there (confirmed by querying `anki_notes`: 0 of 190
+pronunciation notes have a non-null `audio_url` as of this writing). This
+phase's code is correct and tested independent of that — the moment 0.3 runs,
+the very next page load starts caching real files with no further change
+needed — but "real audio actually plays offline on the live app" is,
+necessarily, unverifiable until then.
 
 ---
 
