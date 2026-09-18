@@ -363,11 +363,18 @@ Phases 0–6 apply; Phase 5's parity work is not being skipped.
 
 ### 6.1 A second export, and what it changed
 
-A fresh full-collection export arrived 2026-09-18 (`Capybara-20260918062636.apkg`,
-plus a redundant `Capybara::Pronunciation`-only export confirmed to be a strict
+A fresh export arrived 2026-09-18 (`Capybara-20260918062636.apkg`, plus a
+redundant `Capybara::Pronunciation`-only export confirmed to be a strict
 191-note subset of the full one — every one of its notes, none skipped, already
-present in the full export). Running it through the existing migration CLI
-against the 2026-09-16 export it replaces:
+present in the full export). Both are **deck packages** (plain `collection.anki2`/
+`collection.anki21`, no zstd `collection.anki21b` container) rather than the
+full-collection export `migration/README.md` asks for — worth naming because it
+could have meant missing scheduler config (§7.3's five settings live on deck
+options, not the collection as a whole). It didn't: reading it produced the
+identical five values the 9/16 export had, and a genuine `.colpkg` supplied
+later (§6.2, item 4) confirmed byte-for-byte that nothing was lost. Running the
+deck package through the existing migration CLI against the 2026-09-16 export
+it replaces:
 
 | | 2026-09-16 | 2026-09-18 | Delta |
 |---|---|---|---|
@@ -428,6 +435,14 @@ covered by a regression test:
    re-exports unchanged gets migrated back to the exact same Postgres row id.
    This is what makes Phase 2's merge idempotent rather than merely
    deduplicated.
+4. **A genuine full-collection `.colpkg`** (not a deck package — see §6.1's
+   own caveat about the two `.apkg` files) arrived shortly after this section
+   was first written, exported ~17 minutes after the `.apkg` §6.1 measured.
+   Read structurally: identical counts (1,287 notes, 1,531 card states, 4,615
+   reviews, same five scheduler settings) — nothing changed on the phone in
+   that window, and more importantly, the deck-package export from earlier
+   is confirmed to have carried everything a true full-collection export
+   does. Round-tripped through the writer the same way: zero mismatches.
 
 **What this does not yet verify**, honestly: nobody has opened the resulting
 `.apkg` in a real Anki or AnkiDroid install and looked at it. The round trip
