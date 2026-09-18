@@ -131,3 +131,27 @@ recordings if you just want the text and scheduling state quickly.
 
 Needs the service-role key, same reason as `upload_pronunciation_audio.py` —
 it lives on the maintainer's machine and nowhere else.
+
+## Loading a recovery export — `load_recovery.py`
+
+The other direction from `export_apkg.py`: takes the JSON this package's own CLI
+writes (`notes.json` / `card_state.json` / `reviews.json`) and loads whatever the
+live tables are still missing — see `docs/MIGRATION.md` §2.1 for why this exists
+(the 2026-09-04 backfill silently lost 248 notes and 799 reviews).
+
+```bash
+python -m migration <collection.colpkg> --user tim --out scratch/recovery
+
+export SUPABASE_URL=https://<ref>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=<service role key>
+python -m migration.load_recovery scratch/recovery --user-id tim=<tim's real users.id>
+```
+
+Loads via PostgREST with `Prefer: resolution=ignore-duplicates`, so a row already
+in the table is left alone rather than overwritten — this fills gaps, it never
+upserts live review history from a stale export. `--dry-run` reports row counts
+and the resolved user-id mapping without sending anything. Safe to re-run.
+
+Needs the service-role key, same reason as `upload_pronunciation_audio.py` — it
+lives on the maintainer's machine and nowhere else, which is also why this reads
+JSON off disk with plain `urllib` calls rather than something run for you.
