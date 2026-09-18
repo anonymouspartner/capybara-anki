@@ -21,6 +21,7 @@ import type {
 } from "./types.ts";
 import { ankiDayKey, type DayBoundary, UTC_MIDNIGHT } from "./day.ts";
 import { deckOfCard, SPELLING_DECK } from "./types.ts";
+import type { SettingsPatch } from "./mutations.ts";
 
 export interface Store {
   getNote(noteId: string): Promise<NoteRow | null>;
@@ -45,6 +46,12 @@ export interface Store {
   getNotes(noteIds: string[]): Promise<Map<string, NoteRow>>;
   getCardStates(items: DueItem[]): Promise<Map<string, CardStateRow>>;
   getSchedulerConfig(userId: string): Promise<SchedulerConfigRow>;
+  /** The settings screen's (Phase 5.3) write path — merges `patch` into whatever
+   * `scheduler_config` row already exists for this user. A real UPDATE, not an
+   * upsert: every user already has exactly one row (`anki_scheduler_config_pkey`
+   * is `user_id`, seeded at provisioning), so there is no insert case to cover,
+   * same reasoning as `updateNote`. */
+  updateSchedulerConfig(userId: string, patch: SettingsPatch): Promise<void>;
   /** Inserts a note from an ingestion path (`/scan` today) and returns its
    * generated id. No review step (D10) — the row is immediately reviewable. */
   createNote(note: NewNote): Promise<string>;
@@ -146,6 +153,13 @@ export class InMemoryStore implements Store {
     const config = this.schedulerConfigs.get(userId);
     if (!config) throw new Error(`no scheduler_config row for user ${userId}`);
     return Promise.resolve(config);
+  }
+
+  updateSchedulerConfig(userId: string, patch: SettingsPatch): Promise<void> {
+    const current = this.schedulerConfigs.get(userId);
+    if (!current) throw new Error(`no scheduler_config row for user ${userId}`);
+    this.schedulerConfigs.set(userId, { ...current, ...patch });
+    return Promise.resolve();
   }
 
   createNote(note: NewNote): Promise<string> {

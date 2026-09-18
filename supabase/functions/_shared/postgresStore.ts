@@ -56,6 +56,7 @@ import type {
   SchedulerConfigRow,
   StateCounts,
 } from "../../../src/review/types.ts";
+import type { SettingsPatch } from "../../../src/review/mutations.ts";
 
 /** The three columns getDailyCounts needs out of a review; named because the
  * recent-window memo stores a list of them. */
@@ -268,6 +269,28 @@ export class PostgresStore implements Store {
       if (!data) throw new Error(`no scheduler_config row for user ${userId}`);
       return schedulerConfigFromRow(data);
     });
+  }
+
+  /** The settings screen's (Phase 5.3) write path. A genuine UPDATE, same
+   * reasoning as `updateNote`: every user already has exactly one
+   * `anki_scheduler_config` row (seeded at provisioning, `user_id` is the
+   * primary key), so there is no insert case an upsert would need to cover,
+   * and PostgREST's upsert-validates-NOT-NULL-before-conflict-check trap
+   * doesn't apply here either way. Evicts the request-scoped config memo so a
+   * `getSchedulerConfig` later in the same request sees the write. */
+  async updateSchedulerConfig(userId: string, patch: SettingsPatch): Promise<void> {
+    const dbPatch: Record<string, unknown> = {};
+    if ("dailyNewLimit" in patch) dbPatch.daily_new_limit = patch.dailyNewLimit;
+    if ("dailyReviewLimit" in patch) dbPatch.daily_review_limit = patch.dailyReviewLimit;
+    if ("desiredRetention" in patch) dbPatch.desired_retention = patch.desiredRetention;
+    if ("timeZone" in patch) dbPatch.time_zone = patch.timeZone;
+    if ("rolloverHour" in patch) dbPatch.rollover_hour = patch.rolloverHour;
+    if ("leechThreshold" in patch) dbPatch.leech_threshold = patch.leechThreshold;
+    if ("leechAction" in patch) dbPatch.leech_action = patch.leechAction;
+
+    const { error } = await this.client.from("anki_scheduler_config").update(dbPatch).eq("user_id", userId);
+    if (error) throw new Error(`updateSchedulerConfig: ${error.message}`);
+    this.configMemo.delete(userId);
   }
 
   async createNote(note: NewNote): Promise<string> {

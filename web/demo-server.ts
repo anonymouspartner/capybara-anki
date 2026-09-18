@@ -23,10 +23,12 @@ import {
   editNote,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getSettings,
   getStats,
   setSuspended,
   submitReview,
   undoLastReview,
+  updateSettings,
 } from "../src/review/handlers.ts";
 import { cardKey, InMemoryStore } from "../src/review/store.ts";
 import { DEFAULT_LEECH_ACTION, DEFAULT_LEECH_THRESHOLD } from "../src/review/leech.ts";
@@ -233,6 +235,13 @@ Deno.serve({ port: 8787 }, async (req) => {
     const daysParam = Number(url.searchParams.get("days"));
     const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : undefined;
     return json(await getStats(store, DEMO_USER, new Date(), days));
+  }
+  if (req.method === "GET" && url.pathname === "/sync/settings") {
+    return json(await getSettings(store, DEMO_USER));
+  }
+  if (req.method === "POST" && url.pathname === "/sync/settings") {
+    const result = await updateSettings(store, DEMO_USER, await req.json());
+    return json(result, result.ok ? 200 : 400);
   }
   if (req.method === "POST" && url.pathname === "/sync/review") {
     const body = await req.json();

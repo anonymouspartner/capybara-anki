@@ -46,6 +46,11 @@
  *                                    all-time success rate and streak, and the
  *                                    collection's current state composition
  *                                    (handlers.ts's getStats)
+ *   GET    /sync/settings         → settings screen (Phase 5.3): daily limits,
+ *                                    retention, rollover hour, timezone, leech
+ *                                    threshold/action (handlers.ts's getSettings)
+ *   POST   /sync/settings         → a partial SettingsPatch — only the fields
+ *                                    being changed (handlers.ts's updateSettings)
  *
  * Auth (D13, §4.5): a bearer token, one per person, read from `Deno.env.get` —
  * never hardcoded, never logged. `TIM_TOKEN`/`VIKA_TOKEN` name whose is whose;
@@ -65,11 +70,13 @@ import {
   editNote,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getSettings,
   getStats,
   NotFoundError,
   setSuspended,
   submitReview,
   undoLastReview,
+  updateSettings,
 } from "../../../src/review/handlers.ts";
 import type { Store } from "../../../src/review/store.ts";
 import { resolveUserIdFromRequest } from "../../../src/auth.ts";
@@ -113,6 +120,16 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
     const daysParam = Number(url.searchParams.get("days"));
     const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : undefined;
     return json(await getStats(store, userId, new Date(), days));
+  }
+
+  if (req.method === "GET" && url.pathname === "/sync/settings") {
+    return json(await getSettings(store, userId));
+  }
+
+  if (req.method === "POST" && url.pathname === "/sync/settings") {
+    const body = await req.json();
+    const result = await updateSettings(store, userId, body);
+    return json(result, result.ok ? 200 : 400);
   }
 
   if (req.method === "POST" && url.pathname === "/sync/review") {
