@@ -7,8 +7,19 @@ before any other code gets written: can this collection actually be read, and do
 carry what §7.3 needs (FSRS memory state + scheduler config) to make the switch feel
 like nothing changed?
 
-Two hard boundaries, both from the repo's ground rules and from §7.4 of the design doc:
-  - Read-only. This package never writes to Postgres, and never will — that is the
-    real migration's job, once the shape proven here is trusted.
-  - No Supabase changes. Nothing here calls out to a live project.
+Two hard boundaries, both from the repo's ground rules and from §7.4 of the design
+doc, hold for the core read pipeline — `reader.py`, `extract.py`, `transform.py`,
+`config.py`, `cli.py`, `schema.py`:
+  - Read-only. This core never writes to Postgres.
+  - No Supabase changes from the core. It never calls out to a live project; it
+    only ever reads a `.apkg`/`.colpkg` file on disk.
+
+Two separate, explicitly maintainer-run tools live alongside that core and do NOT
+share this boundary, on purpose — `upload_pronunciation_audio.py` (reads a real
+export, writes to Supabase Storage and `anki_notes.audio_url`) and
+`export_apkg.py` (reads the live `anki_*` tables, writes a `.apkg` file — never
+the reverse). Both require the service-role key on the maintainer's own machine
+and are run by hand, the same "local tool, not a hosted service" reasoning (D7)
+that makes the core package safe to depend on `anki` in the first place — see
+`docs/MIGRATION.md` §6.2 for what `export_apkg.py` is for.
 """

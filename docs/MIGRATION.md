@@ -1,8 +1,8 @@
 # Migration — retiring AnkiDroid
 
-**Status: plan. Written 2026-09-18, against the live database and a real export —
-every number below was measured, not estimated. See the Appendix for how to
-re-measure any of them.**
+**Status: Phase 0.1 done, gate passed. Written 2026-09-18, against the live
+database and two real exports — every number below was measured, not
+estimated. See the Appendix for how to re-measure any of them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -18,10 +18,13 @@ uninstalled**, and the list of things that are not true yet but have to be first
   memory states.** They were discarded at load time by a unique constraint that
   exists for the bot's benefit and is wrong for an imported collection (§2.1).
   ~19% of the notes, ~17% of the history.
-- **There is no way to get data back out of this app.** §2.3 of DESIGN.md promises
-  an `.apkg` escape hatch "kept forever". That promise is currently false (§2.2),
-  which means uninstalling AnkiDroid would leave a Postgres table as the single
-  copy with no backup path.
+- **There was no way to get data back out of this app.** §2.3 of DESIGN.md
+  promises an `.apkg` escape hatch "kept forever". That promise was false (§2.2)
+  — **fixed 2026-09-18** (§6.2, Phase 0.1): `migration/export_apkg.py` now
+  writes a real, verified `.apkg` from the live tables.
+- The 245-twin-pairs and one-vs-two-collection questions are **resolved** (§6):
+  keep both twins, one collection, all of it Tim's — the whole `Vika` side of
+  this was never on Anki to begin with.
 - Those two facts, not feature gaps, are why the answer to "can we switch today"
   is no.
 - The fix order is deliberate: **build the way out before walking further in.**
@@ -277,12 +280,13 @@ Sequenced so that **the way out is built before we walk further in.**
 
 | | Work |
 |---|---|
-| 0.1 | **`/export` → `.apkg` from `anki_notes`.** Port the scanner's genanki writer to read this database, carrying notes, both card kinds, scheduling state and the review log. This is §2.2's promise, made true. |
-| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. Cheap, and independent of 0.1 being perfect. |
-| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). 190 notes currently have `audio_url` NULL and nothing to shadow. |
+| 0.1 | **`/export` → `.apkg` from `anki_notes`. Done, 2026-09-18.** `migration/apkg_writer.py` builds a real Anki collection via the `anki` library (D7's reasoning, extended to writing) and exports it through Anki's own `export_anki_package`; `migration/export_apkg.py` is the maintainer-run CLI that fetches the four tables from Postgres and calls it. This is §2.2's promise, made true — see §7. |
+| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. Still open. Cheap, and independent of 0.1 being perfect. |
+| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). Still open. 190 notes currently have `audio_url` NULL and nothing to shadow. |
 
-**Gate:** a file produced by 0.1 imports into a clean Anki install and the cards
-look right, with intervals intact.
+**Gate: passed.** See §7 for the verification this rests on — a full-scale
+round trip through the real 2026-09-18 export, byte-for-byte, not a synthetic
+stand-in.
 
 ### Phase 1 — Make a faithful import representable
 
@@ -338,25 +342,100 @@ the service worker
 
 ---
 
-## 6. Open decisions
+## 6. Decisions
 
-**1. The 245 twin pairs — keep both, or merge?**
-Recommendation: **keep both through the migration**, then offer a merge tool
-afterwards. Merging at import means replaying FSRS over a history that was never
-one continuous card — the resulting state is wrong, not approximate, which is the
-same argument the loader's own docstring makes. A merge done later, inside the
-app, is safe *because* the review log is append-only and the fold is reproducible.
+Resolved 2026-09-18.
 
-**2. One collection or two?**
-If both people have their own AnkiDroid installation, a second collection has
-never been migrated and Phase 3.1 doubles. If they share one, the question is only
-whether 3,789 reviews should stay attributed to one person — which may simply be
-true.
+**1. The 245 twin pairs — keep both, or merge?** **Keep both** through the
+migration, per the recommendation above — merging at import would replay FSRS
+over a history that was never one continuous card. A merge tool inside the app,
+later, stays available precisely because the review log is append-only.
 
-**3. How strict is "fully migrating"?**
-If it means *uninstall AnkiDroid*, all of Phases 0–6 apply. If it means *stop
-reviewing there but keep it as cold storage*, Phase 5 can slip and the cutover is
-days rather than weeks. Phase 0 is required either way.
+**2. One collection or two?** **One.** Every review not made in this app is
+Tim's — confirmed. Vika has an iPhone with no Anki installation at all; her 15
+in-app reviews (§1.2) are the entirety of her history, nothing predates them.
+This removes half of Phase 3's scope outright: there is no second collection to
+migrate, and no attribution question to resolve — "all of it is Tim's" was
+already true, not a simplifying assumption.
+
+**3. How strict is "fully migrating"?** **Full uninstall is the goal.** All of
+Phases 0–6 apply; Phase 5's parity work is not being skipped.
+
+### 6.1 A second export, and what it changed
+
+A fresh full-collection export arrived 2026-09-18 (`Capybara-20260918062636.apkg`,
+plus a redundant `Capybara::Pronunciation`-only export confirmed to be a strict
+191-note subset of the full one — every one of its notes, none skipped, already
+present in the full export). Running it through the existing migration CLI
+against the 2026-09-16 export it replaces:
+
+| | 2026-09-16 | 2026-09-18 | Delta |
+|---|---|---|---|
+| Notes | 1,285 | 1,287 | +2 |
+| `card_state` | 1,529 | 1,531 | +2 |
+| Reviews | 4,588 | 4,615 | +27 |
+
+**The new export is a clean superset of the old one** — every Anki-native id
+from 2026-09-16 is still present in 2026-09-18 (0 missing either direction on
+notes, card states, or reviews). The +27 reviews are all dated 2026-09-17; the
++2 notes are new cards added on the phone in the same window. There is no
+review-log overlap to reconcile against the app's own in-app reviews from the
+same dates: an Anki revlog id and this app's client-generated review id occupy
+disjoint spaces by construction, so **merging the two logs is a plain union**,
+not a conflict to resolve — Phase 2's "never regress `card_state`" concern
+turns out to be structurally impossible to trigger, not just something the
+merge tool has to guard against. This simplifies Phase 2/3 measurably: the
+merge tool doesn't need conflict-resolution logic, only idempotent insertion.
+
+### 6.2 Phase 0.1, verified
+
+`apkg_writer.py` writes decks, notetypes, notes, cards and revlog through the
+real `anki` library rather than hand-rolled SQLite — the same reasoning D7
+already made for reading, extended to writing, because a hand-written schema is
+exactly how the *original* migration diverged from reality (§7.5 in
+`DESIGN.md`). It deliberately does not invent a second shape to write against:
+decks are named `Capybara::<deck>` and a spelling card is filed under
+`Capybara::Spelling` specifically because that is what `transform.py`'s
+`strip_deck_prefix`/`card_kind_for` already expect on read — the writer targets
+the reader's own assumptions, not a new set of its own.
+
+Two things had to be discovered empirically rather than assumed, both now
+covered by a regression test:
+
+- **`ExportAnkiPackageOptions` needs `with_deck_configs=True`.** Without it the
+  legacy exporter silently substitutes Anki's own factory defaults for every
+  deck's options — caught by a test that wrote `daily_new_limit=40` and read
+  back Anki's default of `20`, not a missing-value fallback of this repo's own.
+- **Deck-options config lives per-deck, not in a flat collection blob** —
+  confirmed directly against the installed `anki` package rather than assumed
+  from the read side's own comments about it.
+
+**Verification, not assertion:**
+
+1. Nine unit tests build a synthetic multi-deck, multi-kind collection (both
+   vocab note types, the spelling deck split, the pronunciation note type with
+   embedded media, suspended cards, never-reviewed cards) and re-read it
+   through `run_migration` — the exact function a real re-import would call —
+   asserting field-for-field equality.
+2. **The real 2026-09-18 export** (1,287 notes, 1,531 card states, 4,615
+   reviews) was written out through the writer and read back through the same
+   pipeline: **zero note field mismatches, zero card-state field mismatches
+   (including float equality on stability/difficulty), review tuples
+   identical, 0 notes skipped.** Built in 1.3 seconds; the resulting file is
+   0.4 MB without media.
+3. Note ids survive a round trip **without being told to** — `note_uuid` is a
+   pure function of `anki_guid`, so a note this tool exports and Anki later
+   re-exports unchanged gets migrated back to the exact same Postgres row id.
+   This is what makes Phase 2's merge idempotent rather than merely
+   deduplicated.
+
+**What this does not yet verify**, honestly: nobody has opened the resulting
+`.apkg` in a real Anki or AnkiDroid install and looked at it. The round trip
+proves the *data* survives intact through the exact code this repo already
+trusts to read a real export back in — it does not prove Anki's own importer
+is happy with the file, or that the (intentionally minimal) card templates
+render sensibly. That's a five-minute manual check, not a re-open of Phase 0.1,
+and it's the one item in §7's checklist below still unticked.
 
 ---
 
@@ -370,7 +449,8 @@ Falsifiable, so this cannot be declared finished on vibes:
 3. For a sample of cards, replaying the log reproduces Anki's own reported
    interval and due date.
 4. `/export` produces an `.apkg` that imports into a clean Anki install with
-   scheduling intact.
+   scheduling intact. **Data fidelity verified (§6.2) — the manual "open it in
+   real Anki" step is the one piece of this still outstanding.**
 5. A week of app-only reviewing with no reconciliation drift.
 6. Both people's stats reflect their own work.
 

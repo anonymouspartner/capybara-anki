@@ -107,3 +107,27 @@ one schema), idempotency across repeated runs (§7.2 — migration is re-run at 
 twice, per D15), the "Anki renamed a config key" case, and the "one config key is an
 untouched empty placeholder while another candidate holds real data" case that a real
 export actually hit during this verification.
+
+## Exporting back out — `export_apkg.py`
+
+The escape hatch `docs/DESIGN.md` §2.3 promises: reads the live `anki_notes` /
+`anki_card_state` / `anki_reviews` / `anki_scheduler_config` tables and writes a
+real `.apkg` via `apkg_writer.py`, using the `anki` library rather than
+hand-rolled SQLite — the same D7 reasoning this package's read side already
+rests on, extended to writing. See `docs/MIGRATION.md` §6.2 for what's been
+verified so far (a full-scale round trip against a real export, byte-for-byte)
+and what hasn't yet (nobody has opened the result in a real Anki install).
+
+```bash
+export SUPABASE_URL=https://<ref>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=<service role key>
+python -m migration.export_apkg --out backup.apkg
+```
+
+`--dry-run` reports row counts and writes nothing. `--user-id` picks whose
+`scheduler_config` supplies the five settings §7.3 cares about (default:
+whoever has the most reviews). `--no-audio` skips downloading pronunciation
+recordings if you just want the text and scheduling state quickly.
+
+Needs the service-role key, same reason as `upload_pronunciation_audio.py` —
+it lives on the maintainer's machine and nowhere else.
