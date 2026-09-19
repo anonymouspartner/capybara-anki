@@ -51,23 +51,42 @@ class UnreadableExportError(RuntimeError):
     """The zip didn't contain a collection database under any name we know about."""
 
 
-def _decompress_if_needed(name: str, raw: bytes) -> bytes:
-    if not name.endswith("b"):
-        return raw
+# The first four bytes of any zstd frame, regardless of what's inside it or what
+# the container calls the file holding it. `collection.anki21b`'s "b" suffix is a
+# reliable enough signal for _decompress_if_needed below (Anki's own naming
+# convention), but `upload_pronunciation_audio.py`'s `media` manifest has no such
+# per-format name to key off of — compressed or not, it's always just "media" —
+# so that caller checks these bytes directly instead.
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def decompress_zstd_frame(raw: bytes) -> bytes:
+    """Streaming zstd decompress, shared by every caller in this package that
+    needs one — `_decompress_if_needed` below (the collection database) and
+    `upload_pronunciation_audio.py` (the media manifest), both zstd frames from
+    the same modern export.
+
+    Anki writes the frame without an embedded content size (a streaming
+    compress, not a one-shot with a known length up front) — confirmed against
+    a real export; `ZstdDecompressor.decompress()` requires that header and
+    raises "could not determine content size in frame header" without it.
+    `stream_reader` makes no such assumption.
+    """
     try:
         import zstandard
     except ImportError as e:
         raise UnreadableExportError(
-            f"{name} is zstd-compressed but the `zstandard` package is not installed. "
+            "zstd-compressed content found but the `zstandard` package is not installed. "
             "pip install -r migration/requirements.txt"
         ) from e
-    # Anki writes the frame without an embedded content size (a streaming
-    # compress, not a one-shot with a known length up front) — confirmed against
-    # a real export; `ZstdDecompressor.decompress()` requires that header and
-    # raises "could not determine content size in frame header" without it.
-    # `stream_reader` makes no such assumption.
     with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
         return reader.read()
+
+
+def _decompress_if_needed(name: str, raw: bytes) -> bytes:
+    if not name.endswith("b"):
+        return raw
+    return decompress_zstd_frame(raw)
 
 
 def _extract_collection_bytes(export_path: Path) -> tuple[bytes, str]:
