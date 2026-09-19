@@ -21,6 +21,7 @@ have no note-level API for synthetic test data, so those are written directly vi
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
@@ -31,6 +32,7 @@ from pathlib import Path
 
 import zstandard
 from anki.collection import Collection
+from anki.import_export_pb2 import MediaEntries
 
 CAPYBARA_FIELDS = [
     "lemma",
@@ -64,6 +66,12 @@ class FixtureCard:
     lapses: int = 0
     stability: float | None = 8.5
     difficulty: float | None = 5.2
+    # Pronunciation-only fields (D18/D23) — reused where a "pronunciation" card
+    # maps them onto PRONUNCIATION_FIELDS instead of CAPYBARA_FIELDS: `lemma` ->
+    # TargetText, `lemma_translation` -> Translation, `language` -> Language,
+    # `gloss` -> Hint. These two have no CAPYBARA_FIELDS equivalent at all.
+    reference_audio: str = ""  # e.g. "[sound:capy_pron_abc123.mp3]"
+    source_id: str = ""
 
 
 @dataclass
@@ -168,17 +176,29 @@ def _build_collection_bytes(fc: FixtureCollection) -> bytes:
         for spec in fc.cards:
             nt = note_types[spec.note_type]
             note = col.new_note(nt)
-            values = {
-                "lemma": spec.lemma,
-                "gloss": spec.gloss,
-                "part_of_speech": spec.part_of_speech,
-                "language": spec.language,
-                "example": spec.example,
-                "example_translation": spec.example_translation,
-                "lemma_translation": spec.lemma_translation,
-            }
-            for fname in CAPYBARA_FIELDS:
-                note[fname] = values[fname]
+            if spec.note_type == "pronunciation":
+                values = {
+                    "TargetText": spec.lemma,
+                    "ReferenceAudio": spec.reference_audio,
+                    "Translation": spec.lemma_translation,
+                    "Language": spec.language,
+                    "Hint": spec.gloss,
+                    "SourceId": spec.source_id,
+                }
+                for fname in PRONUNCIATION_FIELDS:
+                    note[fname] = values[fname]
+            else:
+                values = {
+                    "lemma": spec.lemma,
+                    "gloss": spec.gloss,
+                    "part_of_speech": spec.part_of_speech,
+                    "language": spec.language,
+                    "example": spec.example,
+                    "example_translation": spec.example_translation,
+                    "lemma_translation": spec.lemma_translation,
+                }
+                for fname in CAPYBARA_FIELDS:
+                    note[fname] = values[fname]
 
             did = col.decks.id(spec.deck, create=True)
             col.decks.set_config_id_for_deck_dict(col.decks.get(did), config_id)
@@ -217,7 +237,21 @@ def _build_collection_bytes(fc: FixtureCollection) -> bytes:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def write_export(out_path: Path, compressed: bool, fc: FixtureCollection | None = None) -> Path:
+def _zstd_compress(raw: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zstandard.ZstdCompressor().stream_writer(buf, closefd=False) as writer:
+        writer.write(raw)
+    return buf.getvalue()
+
+
+def write_export(
+    out_path: Path,
+    compressed: bool,
+    fc: FixtureCollection | None = None,
+    media_files: dict[str, bytes] | None = None,
+    compress_media: bool = False,
+    media_format: str = "json",
+) -> Path:
     """Writes a synthetic .colpkg-shaped zip to out_path. compressed=True produces
     the modern zstd (collection.anki21b) shape; False produces the plain
     (collection.anki21) shape.
@@ -225,17 +259,54 @@ def write_export(out_path: Path, compressed: bool, fc: FixtureCollection | None 
     Streamed compression, not one-shot, when compressed=True — verified against a
     real export that this is what Anki actually writes (a zstd frame with no
     content-size header). See reader.py's docstring.
+
+    `media_files` maps a real filename (e.g. "capy_pron_abc123.mp3") to its raw
+    bytes. `media_format` picks which of the two real shapes `media` itself
+    takes (both confirmed against real exports, see upload_pronunciation_audio.py's
+    `_read_media_manifest` docstring for the full story):
+
+    - ``"json"`` (older/plain): a bare ``{"0": "real.mp3", ...}`` dict, archive
+      member name as the key, built from `media_files`' iteration order.
+      `compress_media=True` additionally zstd-compresses that JSON — a shape
+      this codebase has never actually seen in the wild, kept only because
+      nothing rules it out and the fallback path should still cope with it.
+    - ``"protobuf"`` (modern, 2026-09-19): Anki's own `MediaEntries` message,
+      always zstd-compressed (`compress_media` is ignored — every real example
+      of this shape has been compressed), one entry per file carrying
+      `name`/`size`/`sha1` and *no* archive member number — entries are linked
+      to members purely by content hash, the same as production code resolves
+      it, so this deliberately does **not** write member "0" for
+      `media_files`' first entry, member "1" for its second, etc.; the numbered
+      members are assigned in reverse order instead, so a test relying on
+      position rather than sha1 would fail loudly. Every payload file is
+      independently zstd-compressed too, exactly like the real thing.
     """
     fc = fc or _default_collection()
     raw = _build_collection_bytes(fc)
+    media_files = media_files or {}
 
     with zipfile.ZipFile(out_path, "w") as zf:
         if compressed:
-            buf = io.BytesIO()
-            with zstandard.ZstdCompressor().stream_writer(buf, closefd=False) as writer:
-                writer.write(raw)
-            zf.writestr("collection.anki21b", buf.getvalue())
+            zf.writestr("collection.anki21b", _zstd_compress(raw))
         else:
             zf.writestr("collection.anki21", raw)
-        zf.writestr("media", "{}")
+
+        if media_format == "protobuf":
+            filenames = list(media_files.items())
+            entries = MediaEntries()
+            for member, (filename, data) in enumerate(reversed(filenames)):
+                zf.writestr(str(member), _zstd_compress(data))
+                entry = entries.entries.add()
+                entry.name = filename
+                entry.size = len(data)
+                entry.sha1 = hashlib.sha1(data).digest()
+            zf.writestr("media", _zstd_compress(entries.SerializeToString()))
+        else:
+            manifest = {}
+            for i, (filename, data) in enumerate(media_files.items()):
+                member = str(i)
+                manifest[member] = filename
+                zf.writestr(member, data)
+            manifest_bytes = json.dumps(manifest).encode()
+            zf.writestr("media", _zstd_compress(manifest_bytes) if compress_media else manifest_bytes)
     return out_path

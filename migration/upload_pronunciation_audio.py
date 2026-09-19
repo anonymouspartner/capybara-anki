@@ -15,10 +15,24 @@ all 190 rows null a pronunciation card shows no reference audio at all — there
 nothing to listen to before you try to say it, which is the entire point of a
 shadowing card.
 
-Anki stores media as numbered files (``0``, ``1``, ``2``…) plus a ``media`` JSON
-manifest mapping those numbers to real filenames. This reads the manifest, uploads
+Anki stores media as numbered files (``0``, ``1``, ``2``…) plus a ``media``
+manifest mapping members to real filenames. This reads the manifest, uploads
 each file to Supabase Storage, and sets ``anki_notes.audio_url`` on the matching
 note.
+
+That manifest isn't always the plain ``{"0": "real.mp3", ...}`` JSON dict it was
+when this tool was first written, though. A 2026-09-19 re-export of the same
+collection uses Anki's newer format: `collection.anki21b` *and* the `media` file
+are both zstd-compressed, `media` itself decompresses to Anki's own
+`MediaEntries` protobuf message rather than JSON, entries carry no archive
+member number at all (linked back to one only by content hash), and every
+individual numbered payload is *itself* independently zstd-compressed on top of
+all that. `read_media_items`/`_read_media_manifest`/`_decompress_media_member`
+below handle both shapes — see their own docstrings for the full story, verified
+against that real file. If you're reading this because a third shape shows up
+someday: this is the second time the manifest format has changed under this
+tool without changing its own filename, so treat "which shape is this" as
+something to detect from the bytes, the way this file already does, not assume.
 
 Run this yourself
 -----------------
@@ -38,18 +52,22 @@ idempotent, so a partial run is repaired by running it again.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
-import sqlite3
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from anki.import_export_pb2 import MediaEntries
+from google.protobuf.message import DecodeError
+
+from migration.reader import ZSTD_MAGIC, decompress_zstd_frame, open_collection
 
 # The bucket the reviewer's <audio> element fetches from. Public-read: these are
 # machine-generated readings of study phrases, they are fetched by a plain
@@ -73,11 +91,69 @@ class MediaItem:
     language: str          # 'uk' / 'en', from the note's Language field
 
 
-def _collection_member(zf: zipfile.ZipFile) -> str:
-    for name in ("collection.anki21", "collection.anki2"):
-        if name in zf.namelist():
-            return name
-    raise SystemExit("no collection database inside that export — is it really an .apkg?")
+def _decompress_media_member(raw: bytes) -> bytes:
+    """Every individual numbered media payload is independently zstd-compressed
+    in a modern export too — confirmed against a real 2026-09-19 export, where
+    every one of 190 payload files started with the zstd frame magic number.
+    Self-describing, so this is safe to call unconditionally: an older
+    export's uncompressed payloads pass through untouched."""
+    if raw[:4] == ZSTD_MAGIC:
+        return decompress_zstd_frame(raw)
+    return raw
+
+
+def _read_media_manifest(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Returns ``{archive_member: real_filename}``.
+
+    Two export shapes, both real, both confirmed by hand:
+
+    - **Older/plain**: `media` is a bare JSON dict, ``{"0": "real.mp3", ...}`` —
+      the archive member name *is* the dict key. `upload_pronunciation_audio.py`
+      was originally written only against this shape (the 2026-09-17 export).
+    - **Modern**: `media` is zstd-compressed (like `collection.anki21b`, but
+      with no alternate filename to signal that — checked by the frame's own
+      magic number instead), and decompresses to Anki's own `MediaEntries`
+      protobuf message (`anki.import_export_pb2`), not JSON. Confirmed against
+      a real 2026-09-19 export: 190 entries, one per real file, each carrying
+      `name`/`size`/`sha1` — but **no archive member number at all**, and
+      entry order does *not* match the numbered zip members (entry 0's size
+      didn't match zip member "0"'s). The two are additionally not directly
+      comparable anyway: every numbered payload is *itself* independently
+      zstd-compressed (see `_decompress_media_member`). The one thing that
+      reliably links an entry to its member is `sha1`, computed over that
+      member's *decompressed* bytes — verified by matching all 190 real
+      entries this way with zero mismatches, so this is the one link this
+      function trusts rather than any positional assumption.
+
+    A `DecodeError` (or the protobuf parsing "succeeding" with zero entries,
+    since a handful of legitimate byte sequences parse without erroring but
+    produce nothing) means the modern shape doesn't apply here, so this falls
+    back to the plain JSON dict — keeping the older export shape working
+    exactly as it always did.
+    """
+    raw_manifest = zf.read("media")
+    if raw_manifest[:4] == ZSTD_MAGIC:
+        raw_manifest = decompress_zstd_frame(raw_manifest)
+
+    entries = MediaEntries()
+    try:
+        entries.ParseFromString(raw_manifest)
+        if len(entries.entries) == 0:
+            raise DecodeError("parsed to zero entries — not really a MediaEntries message")
+    except DecodeError:
+        return json.loads(raw_manifest)
+
+    numbered = [n for n in zf.namelist() if n.isdigit()]
+    by_sha1 = {
+        hashlib.sha1(_decompress_media_member(zf.read(member))).digest(): member
+        for member in numbered
+    }
+    manifest: dict[str, str] = {}
+    for entry in entries.entries:
+        member = by_sha1.get(entry.sha1)
+        if member is not None:
+            manifest[member] = entry.name
+    return manifest
 
 
 def read_media_items(export_path: Path) -> list[MediaItem]:
@@ -86,6 +162,17 @@ def read_media_items(export_path: Path) -> list[MediaItem]:
     Notes whose ``ReferenceAudio`` names a file the archive does not contain are
     skipped and reported rather than guessed at — the same principle the rest of
     `migration/` applies to malformed rows.
+
+    Reads the collection through `reader.open_collection` (Anki's own
+    `Collection` API) rather than a bare `sqlite3.connect`, and note-type field
+    names through `col.models` rather than `select models from col` — the same
+    two things `extract.py` already does, and for the same reason (reader.py's
+    docstring, finding 2): a modern export's note-type definitions live in
+    dedicated tables, not the JSON blob this file used to read directly, which
+    is an empty string on a real export and silently found zero pronunciation
+    notes. Verified against a real 2026-09-19 AnkiDroid export, which uses this
+    shape — the 2026-09-17 export this tool was first written against evidently
+    didn't, and nothing caught the gap until then.
     """
     with zipfile.ZipFile(export_path) as zf:
         if "media" not in zf.namelist():
@@ -93,28 +180,24 @@ def read_media_items(export_path: Path) -> list[MediaItem]:
                 "that export contains no media. Re-export from Anki with "
                 '"Include media" ticked — without it there is no audio to upload.'
             )
-        manifest: dict[str, str] = json.loads(zf.read("media"))
+        manifest = _read_media_manifest(zf)
         by_filename = {filename: member for member, filename in manifest.items()}
 
-        member = _collection_member(zf)
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / member
-            db_path.write_bytes(zf.read(member))
-            con = sqlite3.connect(db_path)
-            models = json.loads(con.execute("select models from col").fetchone()[0])
-            rows = con.execute("select mid, flds from notes").fetchall()
-            con.close()
-
-    pronunciation_mids = {
-        int(mid)
-        for mid, model in models.items()
-        if [f["name"] for f in model["flds"]] == PRONUNCIATION_FIELDS
-    }
+    with open_collection(export_path) as (col, _format_name):
+        # Stringified, matching extract.py's get_note_types/get_notes convention
+        # (mid=str(...)) rather than trusting col.models' NotetypeId and the raw
+        # notes table's mid column to compare equal as different Python types.
+        pronunciation_mids = {
+            str(m.id)
+            for m in col.models.all_names_and_ids()
+            if [f["name"] for f in col.models.get(m.id)["flds"]] == PRONUNCIATION_FIELDS
+        }
+        rows = col.db.all("select mid, flds from notes")
 
     items: list[MediaItem] = []
     missing: list[str] = []
     for mid, flds in rows:
-        if mid not in pronunciation_mids:
+        if str(mid) not in pronunciation_mids:
             continue
         values = dict(zip(PRONUNCIATION_FIELDS, flds.split("\x1f")))
         match = SOUND_RE.search(values["ReferenceAudio"] or "")
@@ -167,9 +250,14 @@ def ensure_bucket(base_url: str, key: str) -> None:
 
 
 def upload(base_url: str, key: str, export_path: Path, item: MediaItem) -> str:
-    """Uploads one recording and returns its public URL. Overwrites on re-run."""
+    """Uploads one recording and returns its public URL. Overwrites on re-run.
+
+    `_decompress_media_member` here too: a modern export's payload bytes are
+    the file's own zstd frame, not the mp3 itself — uploading them as-is would
+    silently ship a file named "….mp3" that no `<audio>` element can play.
+    """
     with zipfile.ZipFile(export_path) as zf:
-        data = zf.read(item.archive_member)
+        data = _decompress_media_member(zf.read(item.archive_member))
     status, body = _request(
         "POST",
         f"{base_url}/storage/v1/object/{BUCKET}/{item.filename}",

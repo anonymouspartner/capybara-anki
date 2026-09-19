@@ -303,7 +303,7 @@ Sequenced so that **the way out is built before we walk further in.**
 |---|---|
 | 0.1 | **`/export` → `.apkg` from `anki_notes`. Done, 2026-09-18.** `migration/apkg_writer.py` builds a real Anki collection via the `anki` library (D7's reasoning, extended to writing) and exports it through Anki's own `export_anki_package`; `migration/export_apkg.py` is the maintainer-run CLI that fetches the four tables from Postgres and calls it. This is §2.2's promise, made true — see §7. |
 | 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. Still open. Cheap, and independent of 0.1 being perfect. |
-| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). Still open. 190 notes currently have `audio_url` NULL and nothing to shadow. |
+| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). Still open — needs the key. 190 notes currently have `audio_url` NULL and nothing to shadow. **Fixed 2026-09-19, before it ran even once:** the tool only worked against the older, plain export shape; a fresh re-export of the same collection uses Anki's newer container format end to end (see §6.10) and would have failed outright, or silently uploaded unplayable files, if run as it stood. |
 
 **Gate: passed.** See §7 for the verification this rests on — a full-scale
 round trip through the real 2026-09-18 export, byte-for-byte, not a synthetic
@@ -725,6 +725,55 @@ new card left in Ukrainian's queue (its due queue interleaves a review card
 first, so the test answers up to two cards to be sure the new one is reached)
 dropped every deck to 0. Screenshotted before and after. No console errors
 beyond the same Telegram-script and favicon noise every other run here shows.
+
+### 6.10 Phase 0.3's tool, fixed before its first real run
+
+The maintainer re-exported the collection on 2026-09-19 to actually run
+`upload_pronunciation_audio.py` (§0.3) — and that fresh `.apkg` uncovered three
+compatibility gaps in the tool at once, none related to the service-role key
+it was waiting on:
+
+1. **The collection database.** `read_media_items` opened it with a bare
+   `sqlite3.connect` and read note types from `select models from col` — the
+   same JSON-blob assumption `reader.py` already disproved for the main
+   migration path (its own docstring, finding 2): a modern export's note-type
+   definitions live in dedicated tables, and that column is an empty string.
+   Fixed by routing through `reader.open_collection` and `col.models`, the
+   same as `extract.py` already does.
+2. **The `media` manifest.** Not a plain `{"0": "real.mp3", ...}` JSON dict —
+   zstd-compressed (like `collection.anki21b`, but with no filename suffix to
+   signal that, so this is detected from the frame's own magic number
+   instead), and decompresses to Anki's own `MediaEntries` protobuf message,
+   not JSON. Entries carry no archive member number at all; position doesn't
+   match either (checked directly against the real file). The only reliable
+   link back to a member is each entry's `sha1`, computed over that member's
+   *decompressed* bytes.
+3. **The numbered payload files themselves.** Independently zstd-compressed,
+   every one of the real file's 190 — which is what finding 2's sha1 check has
+   to decompress before it can match anything, and what the actual upload step
+   has to decompress too, or Storage would silently receive 190 zstd frames
+   named `….mp3` that no `<audio>` element can play.
+
+None of this was guessed: each layer was confirmed by decoding the real
+uploaded file byte-for-byte (magic numbers, protobuf field numbers by hand
+before finding `anki.import_export_pb2.MediaEntries` already generated in the
+installed `anki` package, then sha1-matching all 190 real entries to their
+members with zero mismatches) before writing the fix. `read_media_items` now
+returns 191 items against that file (one more than the 190 the original
+2026-09-17 export had — the corpus grew by one pronunciation note in the two
+days between exports), each verified to decompress to real MPEG audio, not
+inspected beyond that — the actual lemma text stays out of this repo and out
+of this document, same as every other real corpus value always has.
+
+Added test coverage for all of it — this tool had none before, since it needs
+the service-role key to exercise the write half at all. `migration/tests/
+fixtures.py` gained a real pronunciation-note builder and a `media_format=
+"protobuf"` export mode (entries deliberately written in scrambled order
+against the numbered members, so a test relying on position rather than sha1
+fails loudly) alongside the existing plain-JSON mode. `deno` isn't involved —
+`python -m pytest migration/tests` (98 passing, up from 91) and the CI job's
+own `compileall`/`pyflakes` steps, all run locally before this was considered
+done.
 
 ---
 
