@@ -7,7 +7,9 @@ first real run 2026-09-22 confirmed — a 4.1 MB snapshot landed in the private
 `anki-backups` bucket). Phase 1 done, live. Phase 2/3's loader ran for real,
 2026-09-22 (§6.11): `anki_notes` now holds all 1,287 imported notes, matching
 the export exactly. Phase 3.4 (verify by replay) is still open, pending Anki
-MCP access. Phase 4 done. Phase 5 done. Phase 6 (cutover) is what's left.
+MCP access. Phase 4 done. Phase 5 done. **Phase 6 (cutover) has begun: 6.1
+(freeze AnkiDroid) started 2026-09-22, baseline recorded in §6.13.** 6.2-6.5
+remain.
 Written 2026-09-18, updated 2026-09-22 against the live database — every
 number below was measured, not estimated. See the Appendix for how to
 re-measure any of them.**
@@ -382,8 +384,8 @@ asked for:
 
 | | Work |
 |---|---|
-| 6.1 | **Freeze AnkiDroid.** Stop reviewing there. Do not uninstall. |
-| 6.2 | Final export + merge |
+| 6.1 | **Freeze AnkiDroid.** Stop reviewing there. Do not uninstall. **Started 2026-09-22** — see §6.13 for the exact baseline this freeze starts from. |
+| 6.2 | Final export + merge — one last AnkiDroid export, whenever the freeze is confirmed to have held, run through `load_recovery.py` the same way §6.11 did. |
 | 6.3 | **One week app-only**, with a reconciliation report |
 | 6.4 | Archive the final `.apkg` off-device |
 | 6.5 | Uninstall — and even then, keep the archive. |
@@ -886,6 +888,33 @@ where b.name = 'anki-backups';
 returned exactly one object: `2026/2026-09-22T065758Z.json`, 4.1 MB, in a
 bucket with `public: false` — matching what this section promised before it
 ran. The daily schedule takes over from here with nothing further to do.
+
+### 6.13 Phase 6.1 (freeze), baseline
+
+Phase 6.1 is a behavior, not code — "stop reviewing in AnkiDroid, don't
+uninstall it yet" is something only a person can actually do, on their own
+phone. What this repo can do is pin down an exact, falsifiable baseline for
+the moment the freeze starts, so Phase 6.2's "final export + merge" has a
+precise before/after to check itself against rather than a fuzzy sense of
+"recent":
+
+```sql
+select now(), count(*) from anki_notes;        -- 2026-09-22 07:05:27 UTC, 1,300
+select count(*) from anki_card_state;          -- 1,534
+select count(*) from anki_reviews;             -- 4,766
+select max(reviewed_at) from anki_reviews;     -- 2026-09-18 20:41:04 UTC
+```
+
+**What this does and doesn't establish.** It fixes what the live database
+held at the moment the freeze was declared — useful as a sanity check when
+6.2's final export lands (its own counts should be ≥ these, never less,
+same "never regresses" property §6.11 already relies on). It does **not**
+confirm AnkiDroid itself has actually stopped accumulating reviews — that's
+the one part of this step no query can verify, since by definition nothing
+reviewed on the phone after this point reaches this database until 6.2 runs.
+The only real confirmation is 6.2's export coming back with a last-review
+timestamp that matches whenever the freeze actually started being honored,
+not later.
 
 ---
 
