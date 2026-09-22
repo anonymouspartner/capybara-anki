@@ -1,0 +1,36 @@
+name: backup
+
+# Phase 0.2 of docs/MIGRATION.md's safety net: a daily, unattended snapshot of
+# the four anki_* tables to Supabase Storage as JSON, independent of Phase 0.1's
+# .apkg escape hatch and of anything a maintainer has to remember to run by hand.
+#
+# migration/backup_tables.py is deliberately dependency-free (stdlib only, no
+# `anki`/`zstandard`) precisely so this job stays fast and light despite running
+# every day — see that module's own docstring.
+#
+# Needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY as repo secrets (Settings ->
+# Secrets and variables -> Actions). Nothing here works until a maintainer adds
+# those by hand once — a service-role key is not something this workflow, or
+# anything automated, should be setting for itself.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily — outside both people's rollover_hour=4 local windows either way
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Snapshot anki_* tables to Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m migration.backup_tables

@@ -155,3 +155,31 @@ and the resolved user-id mapping without sending anything. Safe to re-run.
 Needs the service-role key, same reason as `upload_pronunciation_audio.py` — it
 lives on the maintainer's machine and nowhere else, which is also why this reads
 JSON off disk with plain `urllib` calls rather than something run for you.
+
+## Scheduled backup — `backup_tables.py`
+
+Phase 0.2 of `docs/MIGRATION.md`'s safety net: a daily snapshot of the four
+`anki_*` tables to Supabase Storage as JSON, independent of `export_apkg.py`'s
+`.apkg` and of a maintainer remembering to run anything by hand.
+
+Unlike every other tool on this page, this one is meant to run **unattended**
+from `.github/workflows/backup.yml` on a schedule — the service-role key comes
+from a GitHub Actions secret there, not a person's shell. It stays
+dependency-free (no `anki`, no `zstandard`) so that daily job stays fast.
+
+```bash
+export SUPABASE_URL=https://<ref>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=<service role key>
+python -m migration.backup_tables
+```
+
+`--dry-run` reports row counts per table and the object path it would write.
+Each run adds a new dated object (`anki-backups/<year>/<timestamp>.json`)
+rather than overwriting a fixed one, so restoring from last week stays
+possible after today's backup has already run. The bucket is private — this
+is the whole corpus, not the public-read `pronunciation-audio` bucket.
+
+One-time setup the workflow can't do for itself: add `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` as repo secrets (Settings → Secrets and variables
+→ Actions) — a service-role key isn't something CI should provision for
+itself.

@@ -1,8 +1,11 @@
 # Migration — retiring AnkiDroid
 
-**Status: Phase 0 done — 0.1, and now 0.3 too (§6.11): the real pronunciation-audio
-upload ran 2026-09-22, 191/191 uploaded and linked. Phase 0.2 (scheduled backup)
-is still unbuilt. Phase 1 done, live. Phase 2/3's loader ran for real, 2026-09-22
+**Status: Phase 0 done — 0.1, 0.3 (§6.11: the real pronunciation-audio upload ran
+2026-09-22, 191/191 uploaded and linked), and now 0.2 too: `migration/backup_tables.py`
+plus a daily `.github/workflows/backup.yml` snapshot the four `anki_*` tables to
+Storage — built, tested, not yet run for real, since it needs `SUPABASE_URL`/
+`SUPABASE_SERVICE_ROLE_KEY` added as repo secrets first (a maintainer's one-time
+step, same as every other secret in this project). Phase 1 done, live. Phase 2/3's loader ran for real, 2026-09-22
 (§6.11): `anki_notes` now holds all 1,287 imported notes, matching the export
 exactly. Phase 3.4 (verify by replay) is still open, pending Anki MCP access.
 Phase 4 done. Phase 5 done. Phase 6 (cutover) is what's left. Written
@@ -26,8 +29,9 @@ uninstalled**, and the list of things that are not true yet but have to be first
   notes, ~17% of the history. **Fixed 2026-09-18** (§6.3): the constraint was
   rescoped and made live. **Recovered for real 2026-09-22** (§6.11):
   `migration/load_recovery.py` ran against the live project — `anki_notes` now
-  holds all 1,287 imported notes, `anki_reviews` all 4,763, zero gap against
-  the export.
+  holds all 1,287 imported notes, and `anki_reviews` all 4,615 from the
+  export (4,766 live total, the rest being in-app reviews the export never
+  had) — zero gap either way.
 - **There was no way to get data back out of this app.** §2.3 of DESIGN.md
   promises an `.apkg` escape hatch "kept forever". That promise was false (§2.2)
   — **fixed 2026-09-18** (§6.2, Phase 0.1): `migration/export_apkg.py` now
@@ -42,10 +46,11 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - The recovery load has now run (§6.11, 2026-09-22), and so has Phase 0.3's
   real audio upload. All five fidelity gaps (§3.1-3.5, including 4.3's
   per-deck-vs-per-collection daily limit decision) and all four of Phase 5's
-  parity features are complete. What's left: Phase 0.2 (scheduled backup,
-  still unbuilt), Phase 3.4 (verify by replay — needs Anki MCP access, not yet
-  connected), the one manual "open the `.apkg` in real Anki" check (§7 item
-  4), and Phase 6 cutover.
+  parity features are complete. What's left: **Phase 0.2's first real run**
+  (built and tested — §6.12 — but waiting on the two repo secrets a
+  maintainer has to add by hand), Phase 3.4 (verify by replay — needs Anki
+  MCP access, not yet connected), the one manual "open the `.apkg` in real
+  Anki" check (§7 item 4), and Phase 6 cutover.
 
 ---
 
@@ -311,7 +316,7 @@ Sequenced so that **the way out is built before we walk further in.**
 | | Work |
 |---|---|
 | 0.1 | **`/export` → `.apkg` from `anki_notes`. Done, 2026-09-18.** `migration/apkg_writer.py` builds a real Anki collection via the `anki` library (D7's reasoning, extended to writing) and exports it through Anki's own `export_anki_package`; `migration/export_apkg.py` is the maintainer-run CLI that fetches the four tables from Postgres and calls it. This is §2.2's promise, made true — see §7. |
-| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. Still open. Cheap, and independent of 0.1 being perfect. |
+| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. **Built, 2026-09-22** (§6.12): `migration/backup_tables.py` + a daily `.github/workflows/backup.yml`. Not yet run for real — needs `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` added as repo secrets, a maintainer's one-time step (the workflow can't set its own secrets). Cheap, and was always independent of 0.1 being perfect. |
 | 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). **Done, 2026-09-22** (§6.11): 191 files uploaded, 191 notes linked, 0 unmatched. **Fixed 2026-09-19, before it ran even once:** the tool only worked against the older, plain export shape; a fresh re-export of the same collection uses Anki's newer container format end to end (see §6.10) and would have failed outright, or silently uploaded unplayable files, if run as it stood. |
 
 **Gate: passed.** See §7 for the verification this rests on — a full-scale
@@ -824,6 +829,55 @@ what AnkiDroid held that the database didn't is now in the database.
 Anki's own reported interval and due date for a sample of cards" — that needs
 a real Anki install to compare against, which this environment doesn't have.
 Left open until Anki MCP access is available.
+
+### 6.12 Phase 0.2, built
+
+Recommendation was GitHub Actions over `pg_cron`, for three reasons specific
+to this project rather than a general preference: `capybara-bot` already runs
+the same shape of job (`webhook-watch.yml`, a scheduled outside-in check) and
+this project's whole deploy story already runs through Actions + repo
+secrets, so this is the established pattern rather than a new one; a
+`pg_cron` job would need `pg_net` plus a credential stored inside Postgres
+itself (via `vault` or similar) to call out to Storage, which is more moving
+parts than a GitHub Actions secret for the same trust boundary; and Actions
+gives free run history and failure visibility for something whose whole job
+is "did this actually happen last week," which is easy to lose track of
+inside a silently-failing `pg_cron` job.
+
+`migration/backup_tables.py` is deliberately the odd one out among this
+package's Postgres-writing tools: `export_apkg.py`, `upload_pronunciation_audio.py`,
+and `load_recovery.py` are all maintainer-run by design (D7 — the
+service-role key lives on a person's own machine, never anywhere else). This
+one runs unattended on purpose, from `.github/workflows/backup.yml`
+(`schedule: "0 3 * * *"` + `workflow_dispatch`), so the key has to live as a
+GitHub Actions secret instead — the one exception to D7's reasoning in this
+package, made deliberately rather than by accident. Kept dependency-free (no
+`anki`, no `zstandard`) so a job that runs every single day stays cheap and
+fast; it talks to PostgREST and Storage only, the same plain-`urllib`
+approach `export_apkg.py` and `upload_pronunciation_audio.py` already use.
+
+Each run writes a new dated object (`anki-backups/<year>/<timestamp>.json`)
+rather than overwriting a fixed path, so a bad write today can't destroy
+yesterday's backup — and the bucket is created private (`public: false`),
+unlike `pronunciation-audio`, since this is the whole corpus rather than
+machine-generated audio (README.md's own rule: never let anything derived
+from the corpus become casually reachable).
+
+**Verified so far:** 7 new unit tests (`migration/tests/test_backup_tables.py`)
+cover pagination past PostgREST's row cap, a non-2xx response raising rather
+than silently dropping rows, and `--dry-run` reporting counts while calling
+neither `ensure_bucket` nor `upload_snapshot` — monkeypatched, not a real
+network call, the same boundary `check.yml`'s own comment holds every other
+test in this suite to. Full suite: 105 passing (up from 98).
+`compileall`/`pyflakes` clean.
+
+**What this does not verify:** the workflow has never actually fired against
+the live project — it needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+added as GitHub repo secrets first, a maintainer's one-time step this tool
+deliberately doesn't (and shouldn't) do for itself. Once those are set, the
+first scheduled run — or a manual `workflow_dispatch` — is the actual
+verification that this reaches Storage for real, the same "run it once for
+real, not just in CI" gap Phase 0.3 had until §6.11.
 
 ---
 
