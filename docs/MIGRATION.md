@@ -1,11 +1,14 @@
 # Migration — retiring AnkiDroid
 
-**Status: Phase 0.1 done, gate passed. Phase 1 done, live. Phase 2/3's loader is
-built and verified against the real recovery export; the load itself is the one
-step left to a maintainer, since it needs the service-role key (§6.3). Phase 4
-done. Phase 5 done. Written 2026-09-18, against the live database and two real
-exports — every number below was measured, not estimated. See the Appendix for
-how to re-measure any of them.**
+**Status: Phase 0 done — 0.1, and now 0.3 too (§6.11): the real pronunciation-audio
+upload ran 2026-09-22, 191/191 uploaded and linked. Phase 0.2 (scheduled backup)
+is still unbuilt. Phase 1 done, live. Phase 2/3's loader ran for real, 2026-09-22
+(§6.11): `anki_notes` now holds all 1,287 imported notes, matching the export
+exactly. Phase 3.4 (verify by replay) is still open, pending Anki MCP access.
+Phase 4 done. Phase 5 done. Phase 6 (cutover) is what's left. Written
+2026-09-18, updated 2026-09-22 against the live database — every number below
+was measured, not estimated. See the Appendix for how to re-measure any of
+them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -20,10 +23,11 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - **AnkiDroid held the only copy of 248 notes, 799 reviews and 248 FSRS memory
   states**, discarded at load time by a unique constraint that exists for the
   bot's benefit and was wrong for an imported collection (§2.1). ~19% of the
-  notes, ~17% of the history. **Fixed 2026-09-18** (§6.3): the constraint is
-  rescoped and live, and the recovery data is loadable by a maintainer-run
-  script (`migration/load_recovery.py`) — the load itself hadn't run as of this
-  writing.
+  notes, ~17% of the history. **Fixed 2026-09-18** (§6.3): the constraint was
+  rescoped and made live. **Recovered for real 2026-09-22** (§6.11):
+  `migration/load_recovery.py` ran against the live project — `anki_notes` now
+  holds all 1,287 imported notes, `anki_reviews` all 4,763, zero gap against
+  the export.
 - **There was no way to get data back out of this app.** §2.3 of DESIGN.md
   promises an `.apkg` escape hatch "kept forever". That promise was false (§2.2)
   — **fixed 2026-09-18** (§6.2, Phase 0.1): `migration/export_apkg.py` now
@@ -35,18 +39,20 @@ uninstalled**, and the list of things that are not true yet but have to be first
   is no.
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
-- Once the recovery load actually runs, everything else is done: all five
-  fidelity gaps (§3.1-3.5, including 4.3's per-deck-vs-per-collection daily
-  limit decision) and all four of Phase 5's parity features are complete as of
-  2026-09-18. Phase 6 cutover is what's left, and it depends on the maintainer
-  running Phase 0.2/0.3/3.2 first.
+- The recovery load has now run (§6.11, 2026-09-22), and so has Phase 0.3's
+  real audio upload. All five fidelity gaps (§3.1-3.5, including 4.3's
+  per-deck-vs-per-collection daily limit decision) and all four of Phase 5's
+  parity features are complete. What's left: Phase 0.2 (scheduled backup,
+  still unbuilt), Phase 3.4 (verify by replay — needs Anki MCP access, not yet
+  connected), the one manual "open the `.apkg` in real Anki" check (§7 item
+  4), and Phase 6 cutover.
 
 ---
 
 ## 1. Where things actually stand
 
-Measured 2026-09-18 against the live project and `migration/`'s own output from
-the 2026-09-16 run.
+Measured 2026-09-22, after the real Phase 0.3 audio upload and Phase 3.2
+recovery load (§6.11 has the before/after).
 
 ### 1.1 Deployed
 
@@ -63,17 +69,21 @@ the 2026-09-16 run.
 
 | | Count |
 |---|---|
-| `anki_notes` total | 1,050 |
-| — `source = 'anki-import'` | 1,037 |
+| `anki_notes` total | 1,300 |
+| — `source = 'anki-import'` | 1,287 |
 | — `source = 'bot'` | 13 |
 | — `source = 'scan'` | 0 |
-| notes with a spelling card | 241 |
-| `anki_card_state` | 1,281 (241 spelling) |
-| `anki_reviews` | 3,922 (1,192 spelling) |
+| notes with a spelling card | 244 |
+| `anki_card_state` | 1,534 (244 spelling) |
+| `anki_reviews` | 4,766 |
+| — pronunciation notes with `audio_url` set | 191 / 191 |
 | `anki_scheduler_config` | 2 |
 
-Review history spans 2026-06-10 → 2026-09-17. **3,789 of those reviews were
-imported; 133 were made in this app**, by both people, starting 2026-09-16.
+Review history spans 2026-06-10 → 2026-09-18. By reviewer: **4,751 attributed
+to Timothy, 15 to Vika** — the same single-author skew §2.3 already found.
+Of the 4,766 total, 4,615 trace back to the Anki export (all attributed to
+Tim, since the loader takes a single `--user`); the remaining 151 are in-app
+reviews by both people since 2026-09-16.
 
 RLS is enabled on all four `anki_*` tables with **zero policies** — deny-all for
 the anon key, service-role only. That is the right posture, and it is also why the
@@ -81,17 +91,16 @@ original loader can no longer run (§2.4).
 
 ### 1.3 What the export actually contained
 
-`migration/`'s output from the real collection:
+`migration/`'s output from the real collection, now matched **exactly** by the
+live database (§6.11):
 
-| | Export | Loaded | Gap |
+| | Export | Live total | Gap |
 |---|---|---|---|
-| Notes | 1,285 | 1,037 | **248** |
-| — vocabulary | 1,094 | 847 | 247 |
-| — pronunciation | 191 | 190 | 1 |
-| `card_state` rows | 1,529 | 1,281 | **248** |
-| Reviews | 4,588 | 3,789 | **799** |
+| Notes | 1,287 | 1,287 imported (1,300 incl. 13 bot-sourced) | **0** |
+| `card_state` rows | 1,531 | 1,534 (the extra 3 are the bot-sourced notes' own state) | **0** |
+| Reviews | 4,615 | 4,766 | **0** — the extra 151 are reviews made in this app since 2026-09-16, not from the export; `ignore-duplicates` means none of them were ever at risk from this load |
 
-The migration CLI itself is **not** the problem — it read the collection
+The migration CLI itself was never the problem — it read the collection
 correctly, including `card_kind` (D17) and pronunciation notes (D18). Note that
 this contradicts `DESIGN.md` §7.5 finding 5 and §9 step 4, both of which still say
 the CLI doesn't implement those and that the migration hasn't run. Both are stale;
@@ -284,7 +293,7 @@ in afterwards.
 | **No bury** 🟢 fixed 2026-09-18 | D12 promised "suspend / bury / delete". Suspend and delete existed; bury was the missing third. Now built: manual bury/unbury (`POST /sync/bury`) plus Anki's automatic "bury siblings" — answering one of a `Capybara+` note's two cards (D17) buries the other until the study day rolls over, no unbury step needed. Stored as `anki_card_state.buried_on`, an `ankiDayKey` (day.ts), not a boolean or an expiry instant — see `src/review/mutations.ts`'s `buildBuryMutation`/`SiblingBury`. |
 | **No way to add a card in the app** 🟢 fixed 2026-09-18 | `createNote` was reachable only from `/scan`. Now also `POST /sync/note` (`handlers.ts`'s `addCard`) and a ➕ screen in the reviewer itself — deck picks itself from language, same convention `/scan` already used. `source: 'app'`, a new fourth provenance value distinct from `'scan'`/`'bot'` (schema migration, `anki_notes_source_check` widened). |
 | **No settings screen** 🟢 fixed 2026-09-18 | Daily limits, retention, rollover, timezone, leech threshold were all SQL-only. Now a ⚙️ screen next to ➕: `GET`/`POST /sync/settings` (`handlers.ts`'s `getSettings`/`updateSettings`), validated the same edit-in-place way as a note (`mutations.ts`'s `validateSettingsEdit`). Deliberately excludes `fsrsParams`/`maxInterval`/`learningSteps` — §4's gap never asked for those to become editable, and nothing about them changed. |
-| **No audio offline** 🟢 fixed 2026-09-18 | `sw.js` caches the shell only; pronunciation cards needed the network. Now a second cache (`capybara-anki-audio-v1`): `app.js` asks `GET /sync/audio-manifest` once per page load and hands the URL list to the service worker, which fetches and caches whatever it doesn't already have — cheap on every repeat load, since the manifest is the same list far more often than not. Cache-first on match, straight to the network otherwise. **This has nothing to cache yet** — Phase 0.3 (uploading the real audio to Storage) hasn't been run against production, so every one of the 190 pronunciation notes' `audio_url` is still `NULL` live; the manifest returns `[]` until a maintainer runs it, at which point this starts working with no further change. |
+| **No audio offline** 🟢 fixed 2026-09-18, audio live 2026-09-22 | `sw.js` caches the shell only; pronunciation cards needed the network. Now a second cache (`capybara-anki-audio-v1`): `app.js` asks `GET /sync/audio-manifest` once per page load and hands the URL list to the service worker, which fetches and caches whatever it doesn't already have — cheap on every repeat load, since the manifest is the same list far more often than not. Cache-first on match, straight to the network otherwise. **Now has something to cache** — Phase 0.3 ran for real 2026-09-22 (§6.11): all 191 pronunciation notes have a non-null `audio_url`, so `/sync/audio-manifest` returns the real list and this starts working with no further change needed. |
 
 That last one closes `DESIGN.md` §11 open question 1, which asked for a size
 estimate before deciding a caching strategy. Measured on the real export: **190
@@ -303,7 +312,7 @@ Sequenced so that **the way out is built before we walk further in.**
 |---|---|
 | 0.1 | **`/export` → `.apkg` from `anki_notes`. Done, 2026-09-18.** `migration/apkg_writer.py` builds a real Anki collection via the `anki` library (D7's reasoning, extended to writing) and exports it through Anki's own `export_anki_package`; `migration/export_apkg.py` is the maintainer-run CLI that fetches the four tables from Postgres and calls it. This is §2.2's promise, made true — see §7. |
 | 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. Still open. Cheap, and independent of 0.1 being perfect. |
-| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). Still open — needs the key. 190 notes currently have `audio_url` NULL and nothing to shadow. **Fixed 2026-09-19, before it ran even once:** the tool only worked against the older, plain export shape; a fresh re-export of the same collection uses Anki's newer container format end to end (see §6.10) and would have failed outright, or silently uploaded unplayable files, if run as it stood. |
+| 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). **Done, 2026-09-22** (§6.11): 191 files uploaded, 191 notes linked, 0 unmatched. **Fixed 2026-09-19, before it ran even once:** the tool only worked against the older, plain export shape; a fresh re-export of the same collection uses Anki's newer container format end to end (see §6.10) and would have failed outright, or silently uploaded unplayable files, if run as it stood. |
 
 **Gate: passed.** See §7 for the verification this rests on — a full-scale
 round trip through the real 2026-09-18 export, byte-for-byte, not a synthetic
@@ -316,7 +325,7 @@ stand-in.
 | 1.1 | **Rescope the unique constraint. Done, live.** `20260918120000_scope_dedup_key_to_captured_notes.sql` drops `anki_notes_lemma_pos_language_key` and replaces it with a partial unique index `WHERE source <> 'anki-import'` — bot and scan captures still dedupe against each other, imported twins coexist. Verified against live data before applying: 0 collisions among the 13 existing non-import rows, so nothing needed cleaning up first. |
 | 1.2 | **Give the bot an explicit pre-check.** Still open — tracked as follow-up work in `capybara-bot`, not this repo. `/learn` currently relies on the (now-rescoped) constraint; it needs a real "is this word already a captured note?" query instead. |
 
-### Phase 2/3 — Recover the lost data — loader done, 2026-09-18; load not yet run
+### Phase 2/3 — Recover the lost data — done, 2026-09-22
 
 The general-purpose "rewrite the loader as a merge" tool originally scoped here
 turned out to be more than the actual problem needed. `cli.py` already keys
@@ -342,9 +351,9 @@ asked for:
 | | Work |
 |---|---|
 | 3.1 | Fresh full-collection export. **Done** — the 2026-09-18 colpkg, re-run through `cli.py`, sitting at `scratch/recovery/*.json` (1287 notes, 1531 card_states, 4615 reviews). |
-| 3.2 | Load it. **Not yet run** — needs the maintainer's service-role key: `python -m migration.load_recovery scratch/recovery --user-id tim=<real UUID>`. As of this writing the live tables are partially loaded (1053/1287 notes, 1281/1531 card_states, 3922/4615 reviews) from manual recovery batches applied before this tool existed; `ignore-duplicates` makes re-running the loader safe regardless of that partial state. |
+| 3.2 | Load it. **Done, 2026-09-22** (§6.11): `python -m migration.load_recovery scratch/recovery --user-id tim=<Tim's real users.id>`. Live tables now hold 1,287/1,534/4,766 notes/card_state/reviews — zero gap against the export (§1.3). |
 | 3.3 | Reconcile the 2026-09-12 → cutover window. **Already satisfied by construction** — every in-app review since 2026-09-16 has an id `cli.py` cannot reproduce from the Anki export, so `ignore-duplicates` keeps them automatically; there is no separate reconciliation step to write. |
-| 3.4 | **Verify by replay.** Still open, once 3.2 runs: for a sample of cards, fold the merged log and assert the result matches what Anki itself reports. |
+| 3.4 | **Verify by replay.** Still open. For a sample of cards, fold the merged log and assert the result matches what Anki itself reports. Blocked on Anki MCP access — not yet connected to this session — rather than on 3.2, which has now run. |
 
 ### Phase 4 — Fidelity — done, 2026-09-18
 
@@ -498,10 +507,9 @@ pre-cleanup — confirmed after applying, too (`pg_constraint`/`pg_indexes`
 shows the old constraint gone, the new partial index present).
 
 **Phase 2/3 (the recovery loader).** `migration/load_recovery.py` was
-dry-run against the real `scratch/recovery/` export and reports the expected
+dry-run against the real `scratch/recovery/` export and reported the expected
 counts (1287/1531/4615) with the `tim` placeholder resolving to a real
-`users.id`. It has not yet been run for real — that step needs the
-maintainer's service-role key.
+`users.id`. **Run for real 2026-09-22 — see §6.11 for the before/after.**
 
 What actually loaded the ~1,050/1,280/3,920 rows the live tables hold as of
 this writing: an earlier attempt at this same recovery, done by reading each
@@ -775,6 +783,48 @@ fails loudly) alongside the existing plain-JSON mode. `deno` isn't involved —
 own `compileall`/`pyflakes` steps, all run locally before this was considered
 done.
 
+### 6.11 Phase 0.3 and Phase 3.2, run for real, 2026-09-22
+
+Both maintainer-run steps happened in the same session, against the same
+re-exported `Capybara-2026-09-19.apkg` (the file §6.10's fix targets), from a
+GitHub Codespace with the service-role key exported locally — never pasted
+into chat.
+
+**Phase 0.3.** `python -m migration.upload_pronunciation_audio
+scratch/recovery/Capybara-2026-09-19.apkg` (no `--dry-run`, after a
+`--dry-run` first confirmed the same 191 items §6.10 already verified structurally)
+reported: **uploaded 191, linked 191 notes, 0 with no matching row.**
+Independently confirmed against the live database rather than trusting the
+script's own report: `select count(*) from anki_notes where kind =
+'pronunciation' and audio_url is not null` returns 191 — the same number,
+queried a different way.
+
+**Phase 3.2.** `python -m migration.load_recovery scratch/recovery --user-id
+tim=<Tim's real users.id>` (the UUID pulled from `select id, telegram_id,
+display_name from users`, not the `telegram_id` column — those are easy to
+confuse and only one of them is the primary key `load_recovery.py` wants).
+Before vs. after, queried directly:
+
+| | Before | After | Export |
+|---|---|---|---|
+| `anki_notes` (`source='anki-import'`) | 1,037 | **1,287** | 1,287 |
+| `anki_card_state` | 1,281 | **1,534** | 1,531 |
+| `anki_reviews` | 3,922 | **4,766** | 4,615 |
+
+Notes matches the export exactly. `card_state`'s live total is 3 higher than
+the export because it also carries state for the 13 bot-sourced notes,
+untouched by this load. Reviews' live total is 151 higher than the export
+because `anki_reviews` also carries every review made in this app since
+2026-09-16 — `ignore-duplicates` left every one of them alone, which is
+exactly what "never regresses `card_state` or reviews" (§2/§5) promised.
+This closes the 248-notes/799-reviews gap §2.1 opened this document with:
+what AnkiDroid held that the database didn't is now in the database.
+
+**What this does not verify:** §3.4, "does replaying the merged log reproduce
+Anki's own reported interval and due date for a sample of cards" — that needs
+a real Anki install to compare against, which this environment doesn't have.
+Left open until Anki MCP access is available.
+
 ---
 
 ## 7. What "done" looks like
@@ -782,11 +832,15 @@ done.
 Falsifiable, so this cannot be declared finished on vibes:
 
 1. Every note in a fresh export exists in `anki_notes`, matched by GUID. Count
-   equal, zero unmatched. **Loader ready (§6.3) — not yet run for real.**
-2. Every revlog entry exists in `anki_reviews`. Count equal. **Same loader,
-   same status.**
+   equal, zero unmatched. **Done, 2026-09-22 (§6.11)** — 1,287 imported notes
+   live, matching the export exactly.
+2. Every revlog entry exists in `anki_reviews`. Count equal. **Done,
+   2026-09-22 (§6.11)** — all 4,615 export reviews accounted for; the live
+   table's 4,766 is higher only because of in-app reviews the export never
+   had.
 3. For a sample of cards, replaying the log reproduces Anki's own reported
-   interval and due date.
+   interval and due date. **Still open** — needs a real Anki install to
+   compare against; blocked on Anki MCP access.
 4. `/export` produces an `.apkg` that imports into a clean Anki install with
    scheduling intact. **Data fidelity verified (§6.2) — the manual "open it in
    real Anki" step is the one piece of this still outstanding.**
