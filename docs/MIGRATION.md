@@ -1,17 +1,18 @@
 # Migration — retiring AnkiDroid
 
-**Status: Phase 0 done — 0.1, 0.3 (§6.11: the real pronunciation-audio upload ran
-2026-09-22, 191/191 uploaded and linked), and now 0.2 too: `migration/backup_tables.py`
-plus a daily `.github/workflows/backup.yml` snapshot the four `anki_*` tables to
-Storage — built, tested, not yet run for real, since it needs `SUPABASE_URL`/
-`SUPABASE_SERVICE_ROLE_KEY` added as repo secrets first (a maintainer's one-time
-step, same as every other secret in this project). Phase 1 done, live. Phase 2/3's loader ran for real, 2026-09-22
-(§6.11): `anki_notes` now holds all 1,287 imported notes, matching the export
-exactly. Phase 3.4 (verify by replay) is still open, pending Anki MCP access.
-Phase 4 done. Phase 5 done. Phase 6 (cutover) is what's left. Written
-2026-09-18, updated 2026-09-22 against the live database — every number below
-was measured, not estimated. See the Appendix for how to re-measure any of
-them.**
+**Status: Phase 0 done, all three parts run for real against the live project —
+0.1, 0.3 (§6.11: pronunciation audio, 191/191 uploaded and linked, 2026-09-22),
+and 0.2 (§6.12: `migration/backup_tables.py` + daily `.github/workflows/backup.yml`,
+first real run 2026-09-22 confirmed — a 4.1 MB snapshot landed in the private
+`anki-backups` bucket). Phase 1 done, live. Phase 2/3's loader ran for real,
+2026-09-22 (§6.11): `anki_notes` now holds all 1,287 imported notes, matching
+the export exactly. Phase 3.4 (verify by replay) is still open, pending Anki
+MCP access. Phase 4 done. Phase 5 done. **Phase 6 (cutover) has begun: 6.1
+(freeze AnkiDroid) started 2026-09-22, baseline recorded in §6.13.** 6.2-6.5
+remain.
+Written 2026-09-18, updated 2026-09-22 against the live database — every
+number below was measured, not estimated. See the Appendix for how to
+re-measure any of them.**
 
 `docs/DESIGN.md` is the plan of record for *what this app is*. This document is
 narrower and more urgent: it is the plan for **the day AnkiDroid gets
@@ -44,13 +45,13 @@ uninstalled**, and the list of things that are not true yet but have to be first
 - The fix order is deliberate: **build the way out before walking further in.**
   Phase 0 is the escape hatch. Nothing irreversible happens until it exists.
 - The recovery load has now run (§6.11, 2026-09-22), and so has Phase 0.3's
-  real audio upload. All five fidelity gaps (§3.1-3.5, including 4.3's
-  per-deck-vs-per-collection daily limit decision) and all four of Phase 5's
-  parity features are complete. What's left: **Phase 0.2's first real run**
-  (built and tested — §6.12 — but waiting on the two repo secrets a
-  maintainer has to add by hand), Phase 3.4 (verify by replay — needs Anki
-  MCP access, not yet connected), the one manual "open the `.apkg` in real
-  Anki" check (§7 item 4), and Phase 6 cutover.
+  real audio upload, and so has Phase 0.2's first real backup (§6.12,
+  2026-09-22) — **all of Phase 0 is done and verified against the live
+  project, not just built.** All five fidelity gaps (§3.1-3.5, including
+  4.3's per-deck-vs-per-collection daily limit decision) and all four of
+  Phase 5's parity features are complete too. What's left: Phase 3.4 (verify
+  by replay — needs Anki MCP access, not yet connected), the one manual
+  "open the `.apkg` in real Anki" check (§7 item 4), and Phase 6 cutover.
 
 ---
 
@@ -316,7 +317,7 @@ Sequenced so that **the way out is built before we walk further in.**
 | | Work |
 |---|---|
 | 0.1 | **`/export` → `.apkg` from `anki_notes`. Done, 2026-09-18.** `migration/apkg_writer.py` builds a real Anki collection via the `anki` library (D7's reasoning, extended to writing) and exports it through Anki's own `export_anki_package`; `migration/export_apkg.py` is the maintainer-run CLI that fetches the four tables from Postgres and calls it. This is §2.2's promise, made true — see §7. |
-| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. **Built, 2026-09-22** (§6.12): `migration/backup_tables.py` + a daily `.github/workflows/backup.yml`. Not yet run for real — needs `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` added as repo secrets, a maintainer's one-time step (the workflow can't set its own secrets). Cheap, and was always independent of 0.1 being perfect. |
+| 0.2 | **Scheduled backup** of the four `anki_*` tables to Storage as JSON. **Done, 2026-09-22** (§6.12): `migration/backup_tables.py` + a daily `.github/workflows/backup.yml`. First real run confirmed the same day — a 4.1 MB snapshot in the private `anki-backups` bucket. Cheap, and was always independent of 0.1 being perfect. |
 | 0.3 | **Upload the pronunciation audio** — `migration/upload_pronunciation_audio.py`, maintainer-run (service-role key). **Done, 2026-09-22** (§6.11): 191 files uploaded, 191 notes linked, 0 unmatched. **Fixed 2026-09-19, before it ran even once:** the tool only worked against the older, plain export shape; a fresh re-export of the same collection uses Anki's newer container format end to end (see §6.10) and would have failed outright, or silently uploaded unplayable files, if run as it stood. |
 
 **Gate: passed.** See §7 for the verification this rests on — a full-scale
@@ -383,8 +384,8 @@ asked for:
 
 | | Work |
 |---|---|
-| 6.1 | **Freeze AnkiDroid.** Stop reviewing there. Do not uninstall. |
-| 6.2 | Final export + merge |
+| 6.1 | **Freeze AnkiDroid.** Stop reviewing there. Do not uninstall. **Started 2026-09-22** — see §6.13 for the exact baseline this freeze starts from. |
+| 6.2 | Final export + merge — one last AnkiDroid export, whenever the freeze is confirmed to have held, run through `load_recovery.py` the same way §6.11 did. |
 | 6.3 | **One week app-only**, with a reconciliation report |
 | 6.4 | Archive the final `.apkg` off-device |
 | 6.5 | Uninstall — and even then, keep the archive. |
@@ -830,7 +831,7 @@ Anki's own reported interval and due date for a sample of cards" — that needs
 a real Anki install to compare against, which this environment doesn't have.
 Left open until Anki MCP access is available.
 
-### 6.12 Phase 0.2, built
+### 6.12 Phase 0.2, built and verified
 
 Recommendation was GitHub Actions over `pg_cron`, for three reasons specific
 to this project rather than a general preference: `capybara-bot` already runs
@@ -871,13 +872,49 @@ network call, the same boundary `check.yml`'s own comment holds every other
 test in this suite to. Full suite: 105 passing (up from 98).
 `compileall`/`pyflakes` clean.
 
-**What this does not verify:** the workflow has never actually fired against
-the live project — it needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
-added as GitHub repo secrets first, a maintainer's one-time step this tool
-deliberately doesn't (and shouldn't) do for itself. Once those are set, the
-first scheduled run — or a manual `workflow_dispatch` — is the actual
-verification that this reaches Storage for real, the same "run it once for
-real, not just in CI" gap Phase 0.3 had until §6.11.
+**Run for real, 2026-09-22.** Once the maintainer added `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` as repo secrets, a manual `workflow_dispatch`
+(rather than waiting for the next 03:00 UTC schedule) confirmed the whole
+path end to end: the job's "Snapshot anki_* tables to Storage" step completed
+in 7 seconds, and — checked independently against the live project, not just
+the workflow's own green checkmark —
+
+```sql
+select b.name, b.public, o.name, o.created_at, (o.metadata->>'size')::bigint
+from storage.buckets b join storage.objects o on o.bucket_id = b.id
+where b.name = 'anki-backups';
+```
+
+returned exactly one object: `2026/2026-09-22T065758Z.json`, 4.1 MB, in a
+bucket with `public: false` — matching what this section promised before it
+ran. The daily schedule takes over from here with nothing further to do.
+
+### 6.13 Phase 6.1 (freeze), baseline
+
+Phase 6.1 is a behavior, not code — "stop reviewing in AnkiDroid, don't
+uninstall it yet" is something only a person can actually do, on their own
+phone. What this repo can do is pin down an exact, falsifiable baseline for
+the moment the freeze starts, so Phase 6.2's "final export + merge" has a
+precise before/after to check itself against rather than a fuzzy sense of
+"recent":
+
+```sql
+select now(), count(*) from anki_notes;        -- 2026-09-22 07:05:27 UTC, 1,300
+select count(*) from anki_card_state;          -- 1,534
+select count(*) from anki_reviews;             -- 4,766
+select max(reviewed_at) from anki_reviews;     -- 2026-09-18 20:41:04 UTC
+```
+
+**What this does and doesn't establish.** It fixes what the live database
+held at the moment the freeze was declared — useful as a sanity check when
+6.2's final export lands (its own counts should be ≥ these, never less,
+same "never regresses" property §6.11 already relies on). It does **not**
+confirm AnkiDroid itself has actually stopped accumulating reviews — that's
+the one part of this step no query can verify, since by definition nothing
+reviewed on the phone after this point reaches this database until 6.2 runs.
+The only real confirmation is 6.2's export coming back with a last-review
+timestamp that matches whenever the freeze actually started being honored,
+not later.
 
 ---
 
