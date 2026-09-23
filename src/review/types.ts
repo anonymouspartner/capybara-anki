@@ -41,10 +41,42 @@ export type CardKind = "recall" | "spelling";
  */
 export const SPELLING_DECK = "Spelling";
 
+/**
+ * Decks that hold both languages' cards, split per language when shown.
+ *
+ * Both people see every deck, and a card has one schedule shared by whoever
+ * answers it (postgresStore.ts's class docstring). Ukrainian and English are
+ * already one learner's each, but Spelling, Grammar and Pronunciation gathered
+ * both languages into one queue, so studying one of them moved the other
+ * person's cards too. Splitting them by language keeps each person's schedule
+ * their own as long as they open their own decks — without storing anything:
+ * `anki_notes.deck` keeps naming the topic ("Grammar"), `language` already says
+ * whose it is, and capybara-bot keeps writing exactly what it writes today.
+ */
+const SPLIT_DECKS: ReadonlySet<string> = new Set(["Grammar", "Pronunciation"]);
+const LANGUAGE_NAME: Record<"uk" | "en", string> = { uk: "Ukrainian", en: "English" };
+
 /** Which deck a given card of a note belongs to. The one place that mapping
  * lives, so the deck list, the queue and the daily counts cannot disagree. */
-export function deckOfCard(noteDeck: string, cardKind: CardKind): string {
-  return cardKind === "spelling" ? SPELLING_DECK : noteDeck;
+export function deckOfCard(noteDeck: string, cardKind: CardKind, language: "uk" | "en"): string {
+  const prefix = LANGUAGE_NAME[language];
+  if (cardKind === "spelling") return `${prefix} ${SPELLING_DECK}`;
+  if (SPLIT_DECKS.has(noteDeck)) return `${prefix} ${noteDeck}`;
+  return noteDeck;
+}
+
+/** Which notes could have a card in `deck` — a query narrowing only; callers
+ * still check every card with `deckOfCard`, which stays the one authority. A
+ * split deck narrows by language alone, so a note stored under an
+ * already-qualified name (say "English Pronunciation") is never filtered out
+ * before that check sees it. */
+export function notesForDeck(deck: string): { language?: "uk" | "en"; deck?: string } {
+  for (const [language, name] of Object.entries(LANGUAGE_NAME) as Array<["uk" | "en", string]>) {
+    if (!deck.startsWith(`${name} `)) continue;
+    const topic = deck.slice(name.length + 1);
+    if (topic === SPELLING_DECK || SPLIT_DECKS.has(topic)) return { language };
+  }
+  return { deck };
 }
 
 /** D18: what kind of thing a note is, for the reviewer UI's sake — not a
