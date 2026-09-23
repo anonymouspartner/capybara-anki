@@ -9,8 +9,11 @@ first real run 2026-09-22 confirmed — a 4.1 MB snapshot landed in the private
 the export exactly. Phase 3.4 (verify by replay) is still open, pending Anki
 MCP access. Phase 4 done. Phase 5 done. **Phase 6 (cutover) has begun: 6.1
 (freeze AnkiDroid) started 2026-09-22, baseline recorded in §6.13.** 6.2-6.5
-remain.
-Written 2026-09-18, updated 2026-09-22 against the live database — every
+remain. **2026-09-23 (§6.14):** `sync` v13 deployed from `main` through the new
+gated `.github/workflows/deploy.yml`, byte-verified — this is what shipped the
+Phase 4/5 work to the live app, plus decks split by language so each person's
+schedule stays their own; an English Pronunciation deck now has a writer.
+Written 2026-09-18, updated 2026-09-23 against the live database — every
 number below was measured, not estimated. See the Appendix for how to
 re-measure any of them.**
 
@@ -64,12 +67,12 @@ recovery load (§6.11 has the before/after).
 
 | Piece | State |
 |---|---|
-| `sync` | v12, byte-verified against `main` |
+| `sync` | v13, deployed 2026-09-23 by `deploy.yml` from `407e200`; all 14 files byte-verified against `main` (§6.14) |
 | `scan` | v6, byte-verified against `main` |
 | `pronounce` | v7 |
 | `app` | v5 — **dead**, `web/` moved to GitHub Pages; still deployed |
 | `web/` | GitHub Pages, serving current `main` |
-| `telegram-bot` | v124 (capybara-bot; `/study` + `/syncanki` live) |
+| `telegram-bot` | v126 (capybara-bot; `/study`, `/syncanki` and the daily auto-learn live) |
 
 ### 1.2 In the database
 
@@ -329,7 +332,7 @@ stand-in.
 | | Work |
 |---|---|
 | 1.1 | **Rescope the unique constraint. Done, live.** `20260918120000_scope_dedup_key_to_captured_notes.sql` drops `anki_notes_lemma_pos_language_key` and replaces it with a partial unique index `WHERE source <> 'anki-import'` — bot and scan captures still dedupe against each other, imported twins coexist. Verified against live data before applying: 0 collisions among the 13 existing non-import rows, so nothing needed cleaning up first. |
-| 1.2 | **Give the bot an explicit pre-check.** Still open — tracked as follow-up work in `capybara-bot`, not this repo. `/learn` currently relies on the (now-rescoped) constraint; it needs a real "is this word already a captured note?" query instead. |
+| 1.2 | **Give the bot an explicit pre-check. Done, live** — capybara-bot #86 (v104): `writeAnkiNotes` now selects existing captured notes (`source <> 'anki-import'`) on the `(lemma, part_of_speech, language)` key before inserting, instead of relying on the partial index — which `supabase-js`'s `upsert` can't target anyway. Every card writer in the bot (`/learn`, the grammar assistant, auto-learn, `/syncanki`) goes through it. |
 
 ### Phase 2/3 — Recover the lost data — done, 2026-09-22
 
@@ -916,6 +919,48 @@ The only real confirmation is 6.2's export coming back with a last-review
 timestamp that matches whenever the freeze actually started being honored,
 not later.
 
+### 6.14 Decks split by language, and the first gated deploy, 2026-09-23
+
+**Why the split.** The app shows both people every deck and keeps one schedule
+per card (`anki_card_state` is keyed on `(note_id, card_kind)`, per D22), so
+each person's schedule is their own only while each studies their own decks.
+The per-language `Ukrainian` / `English` vocab decks already kept that
+separation; `Spelling`, `Grammar` and `Pronunciation` did not — each mixed both
+languages in one queue, so Vika answering a card would reschedule it for Tim.
+capybara-anki #40 splits those three by the note's `language`:
+`Ukrainian Spelling` / `English Spelling`, `Ukrainian Grammar` /
+`English Grammar`, `Ukrainian Pronunciation` / `English Pronunciation`.
+It is **display-only**: `deckOfCard` in `src/review/types.ts` derives the name,
+`notesForDeck` maps it back to a filter, and nothing stored changed — no
+migration, no rewrite of `anki_notes.deck`. `/export` deliberately keeps the
+old names — one `Capybara::Spelling` deck — because the importer
+(`transform.strip_deck_prefix`) recognizes a spelling card by that exact deck
+name, so an export → import round trip is unaffected (see §8 for the docstring
+this makes stale).
+
+**English pronunciation.** Until now the only pronunciation deck was the 191
+Ukrainian notes from the Anki export. capybara-bot #88 adds `--direct` to its
+`scripts/anki_pronunciation` generator: it writes TTS audio to the
+`pronunciation-audio` bucket and inserts `kind = 'pronunciation'` notes straight
+into `anki_notes`, skipping ones already there. Run with `--lang en`, it builds
+Vika's deck from her own most-used vocabulary; the split above puts it in
+`English Pronunciation`. Maintainer-run (service-role key); not yet run as of
+this writing.
+
+**How it shipped.** The live `sync` was v12 — §1.1's "byte-verified against
+`main`" was measured against an earlier `main` — and several merges behind —
+none of Phase 4 (FSRS-6, learning steps, per-collection limits) or Phase 5
+(bury, add-a-card, settings, offline audio) had reached the app yet, despite
+being done and verified here. capybara-anki #41 adds `.github/workflows/deploy.yml`:
+manual dispatch only, confirmed by typing `deploy`, which runs the same
+type-check and tests as CI, deploys the committed files with the Supabase CLI
+(never a hand-assembled bundle), and smoke-tests that the function boots
+(answers an unauthenticated request with 401, not 5xx). Its first run deployed
+`sync` v13 from `407e200`. Afterwards all 14 files in the live bundle were
+compared against `main`: 14 identical, 0 different. The live schema already had
+every column this code reads (`learning_step`, `buried_on`, the leech and
+rollover settings) before the deploy, so nothing else had to change first.
+
 ---
 
 ## 7. What "done" looks like
@@ -953,6 +998,10 @@ Not made here — flagged so they are not re-discovered:
   deployed and verified.
 - **`DESIGN.md` §11 open question 1** (audio caching) is answerable now — 14.3 MB,
   see §4.
+- **`migration/apkg_writer.py`'s `_card_deck_name`** says it "mirrors
+  `src/review/types.ts`'s `deckOfCard` exactly". Since §6.14 it doesn't, on
+  purpose: the app displays split decks, the export keeps the stored names the
+  importer needs. The behavior is right; the docstring is stale.
 
 ---
 
