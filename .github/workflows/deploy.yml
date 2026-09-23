@@ -1,0 +1,97 @@
+name: deploy
+
+# Manual, gated deploy of this repo's edge functions FROM the committed files —
+# the same discipline capybara-bot's deploy.yml follows ("deploy the committed
+# file only via the Supabase CLI, never an inline/reconstructed string"), because
+# a function assembled by hand is exactly how a bad build reaches production.
+# Runs ONLY on manual dispatch, never on push/PR, so the access token is never
+# exposed to fork pull requests.
+#
+# Needs repo secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_ACCESS_TOKEN — https://supabase.com/dashboard/account/tokens
+#   SUPABASE_URL          — https://<ref>.supabase.co (already set for backup.yml)
+# The functions' own runtime secrets (TIM_TOKEN, TELEGRAM_BOT_TOKEN, ...) live on
+# the Supabase project and a code deploy never touches them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm you want to deploy to production.'
+        required: true
+        default: ""
+      function:
+        description: Which function to deploy
+        required: true
+        type: choice
+        options: [sync, scan, pronounce, all]
+        default: sync
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm == 'deploy' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # The same gate check.yml runs on every push: nothing that fails it ships.
+      - name: Type-check and test
+        run: |
+          deno check src/fsrs/*.ts src/review/*.ts src/scan/*.ts src/pronunciation/*.ts src/auth.ts supabase/functions/sync/index.ts supabase/functions/scan/index.ts supabase/functions/pronounce/index.ts web/demo-server.ts
+          deno test --allow-read --allow-env src/
+
+      - name: Install the Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Resolve target project
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          ref=$(echo "${SUPABASE_URL:-}" | sed -E 's#^https://([a-z0-9]+)\.supabase\.co/?$#\1#')
+          if [ -z "$ref" ] || [ "$ref" = "${SUPABASE_URL:-}" ]; then
+            echo "FAIL: SUPABASE_URL is not set to https://<ref>.supabase.co"; exit 1
+          fi
+          echo "TARGET_REF=$ref" >> "$GITHUB_ENV"
+          # The CLI wants a project directory; this repo keeps no local-stack config.
+          [ -f supabase/config.toml ] || printf 'project_id = "capybara-anki"\n' > supabase/config.toml
+
+      # verify_jwt stays off: every function authenticates itself (src/auth.ts's
+      # device token or Telegram initData), and the live functions already run
+      # this way. deno.json is the import map (ts-fsrs), as on every prior deploy.
+      - name: Deploy (committed files only)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          FUNCTION: ${{ github.event.inputs.function }}
+        run: |
+          set -euo pipefail
+          if [ "$FUNCTION" = "all" ]; then fns="sync scan pronounce"; else fns="$FUNCTION"; fi
+          for fn in $fns; do
+            supabase functions deploy "$fn" --project-ref "$TARGET_REF" --no-verify-jwt --import-map deno.json
+          done
+          echo "FUNCTIONS=$fns" >> "$GITHUB_ENV"
+
+      # A function that fails to boot answers 5xx; a booted one refuses an
+      # unauthenticated request with 401 before touching the database.
+      - name: Smoke-test
+        run: |
+          set -euo pipefail
+          for fn in $FUNCTIONS; do
+            code=$(curl -s -o /tmp/body -w '%{http_code}' "https://${TARGET_REF}.supabase.co/functions/v1/${fn}/")
+            echo "$fn -> $code $(head -c 200 /tmp/body)"
+            [ "$code" = "401" ] || { echo "FAIL: $fn did not boot cleanly (expected 401)"; exit 1; }
+          done
