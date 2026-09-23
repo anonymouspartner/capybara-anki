@@ -20,7 +20,7 @@ import type {
   StateCounts,
 } from "./types.ts";
 import { ankiDayKey, type DayBoundary, UTC_MIDNIGHT } from "./day.ts";
-import { deckOfCard, SPELLING_DECK } from "./types.ts";
+import { deckOfCard } from "./types.ts";
 import type { SettingsPatch } from "./mutations.ts";
 
 export interface Store {
@@ -186,10 +186,10 @@ export class InMemoryStore implements Store {
     // exactly the note set they want to see.
     const decks = new Set<string>();
     for (const note of this.notes.values()) {
-      decks.add(note.deck);
+      decks.add(deckOfCard(note.deck, "recall", note.language));
       // A spelling card lives in its own deck, exactly as Anki pins it — see
       // SPELLING_DECK. The deck exists iff some note actually has one.
-      if (note.hasSpelling) decks.add(SPELLING_DECK);
+      if (note.hasSpelling) decks.add(deckOfCard(note.deck, "spelling", note.language));
     }
     return Promise.resolve([...decks]);
   }
@@ -218,7 +218,7 @@ export class InMemoryStore implements Store {
       for (const cardKind of cardKinds) {
         // Scoped on the card's deck, not the note's: a Capybara+ note's recall
         // card is in Ukrainian while its spelling card is in Spelling.
-        if (deck !== undefined && deckOfCard(note.deck, cardKind) !== deck) continue;
+        if (deck !== undefined && deckOfCard(note.deck, cardKind, note.language) !== deck) continue;
         const state = this.cardStates.get(cardKey(note.id, cardKind));
         candidates.push({
           noteId: note.id,

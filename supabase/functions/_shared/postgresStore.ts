@@ -43,7 +43,7 @@ import {
   DEFAULT_LEECH_THRESHOLD,
   type LeechAction,
 } from "../../../src/review/leech.ts";
-import { deckOfCard, SPELLING_DECK } from "../../../src/review/types.ts";
+import { deckOfCard, notesForDeck } from "../../../src/review/types.ts";
 import type {
   CardKind,
   CardStateRow,
@@ -329,21 +329,22 @@ export class PostgresStore implements Store {
    * the person looking at an AnkiDroid list that showed it. See the class
    * docstring on what that means for D2.
    *
-   * And it reports a `Spelling` deck when any note has a spelling card, because
-   * that is where Anki puts those cards (SPELLING_DECK) — the deck belongs to
-   * the card, not to the note.
+   * Every name goes through deckOfCard: a spelling card lands in its language's
+   * Spelling deck (the deck belongs to the card, not the note), and Grammar /
+   * Pronunciation are split by language the same way.
    */
   async getDecks(_userId: string): Promise<string[]> {
     const decks = new Set<string>();
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
       const { data, error } = await this.client
         .from("anki_notes")
-        .select("deck, has_spelling")
+        .select("deck, language, has_spelling")
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
       if (error) throw new Error(`getDecks: ${error.message}`);
       for (const row of data ?? []) {
-        decks.add(row.deck as string);
-        if (row.has_spelling) decks.add(SPELLING_DECK);
+        const language = row.language as "uk" | "en";
+        decks.add(deckOfCard(row.deck as string, "recall", language));
+        if (row.has_spelling) decks.add(deckOfCard(row.deck as string, "spelling", language));
       }
       if (!data || data.length < PostgresStore.PAGE_SIZE) break;
     }
@@ -396,14 +397,16 @@ export class PostgresStore implements Store {
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
       let noteQuery = this.client
         .from("anki_notes")
-        .select("deck, id, has_spelling, anki_card_state(card_kind, due, state, suspended, buried_on)")
+        .select("deck, language, id, has_spelling, anki_card_state(card_kind, due, state, suspended, buried_on)")
         .range(from, from + PostgresStore.PAGE_SIZE - 1);
-      // Scoping to the Spelling deck cannot filter on anki_notes.deck — that
-      // column says where the *note* lives, and a spelling card lives elsewhere
-      // (SPELLING_DECK). So ask for the notes that have one and let the per-card
-      // filter below do the rest.
-      if (deck === SPELLING_DECK) noteQuery = noteQuery.eq("has_spelling", true);
-      else if (deck !== undefined) noteQuery = noteQuery.eq("deck", deck);
+      // Only a narrowing — a split deck ("Ukrainian Spelling") isn't a value of
+      // anki_notes.deck, so notesForDeck maps it to its language and the
+      // per-card deckOfCard check below decides the rest.
+      if (deck !== undefined) {
+        const scope = notesForDeck(deck);
+        if (scope.language) noteQuery = noteQuery.eq("language", scope.language);
+        if (scope.deck) noteQuery = noteQuery.eq("deck", scope.deck);
+      }
       const { data, error } = await noteQuery;
       if (error) throw new Error(`getDueCandidates: ${error.message}`);
       notes.push(...(data ?? []));
@@ -424,7 +427,7 @@ export class PostgresStore implements Store {
       const stateByKind = new Map(states.map((s) => [s.card_kind, s]));
       const cardKinds: CardKind[] = note.has_spelling ? ["recall", "spelling"] : ["recall"];
       for (const kind of cardKinds) {
-        if (deck !== undefined && deckOfCard(note.deck as string, kind) !== deck) continue;
+        if (deck !== undefined && deckOfCard(note.deck as string, kind, note.language as "uk" | "en") !== deck) continue;
         const state = stateByKind.get(kind);
         candidates.push({
           noteId: note.id as string,

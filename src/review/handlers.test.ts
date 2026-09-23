@@ -944,16 +944,15 @@ Deno.test("undo takes back the answer but not a suspension", async () => {
   assertEquals(store.cardStates.get(cardKey("n1", "recall"))!.suspended, true);
 });
 
-Deno.test("a spelling card lives in the Spelling deck, not its note's deck", async () => {
+Deno.test("a spelling card lives in its language's Spelling deck, not its note's deck", async () => {
   const store = new InMemoryStore();
   seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
   seedNote(store, "plain", { deck: "Ukrainian", hasSpelling: false });
   seedNote(store, "both", { deck: "Ukrainian", hasSpelling: true });
   seedNote(store, "en", { deck: "English", language: "en", hasSpelling: true });
 
-  // The deck list matches what AnkiDroid shows: Spelling is its own row.
   const decks = await store.getDecks("u1");
-  assertEquals(decks.sort(), ["English", "Spelling", "Ukrainian"]);
+  assertEquals(decks.sort(), ["English", "English Spelling", "Ukrainian", "Ukrainian Spelling"]);
 
   // Ukrainian holds only the recall cards of its notes...
   const ukrainian = await getDueQueue(store, "u1", NOW, "Ukrainian");
@@ -962,16 +961,37 @@ Deno.test("a spelling card lives in the Spelling deck, not its note's deck", asy
     "plain/recall",
   ]);
 
-  // ...and Spelling gathers the spelling cards from every note deck.
-  const spelling = await getDueQueue(store, "u1", NOW, "Spelling");
-  assertEquals(spelling.map((i) => `${i.noteId}/${i.cardKind}`).sort(), [
-    "both/spelling",
-    "en/spelling",
-  ]);
+  // ...and each language's spelling cards stay out of the other's queue.
+  const ukSpelling = await getDueQueue(store, "u1", NOW, "Ukrainian Spelling");
+  assertEquals(ukSpelling.map((i) => `${i.noteId}/${i.cardKind}`), ["both/spelling"]);
+  const enSpelling = await getDueQueue(store, "u1", NOW, "English Spelling");
+  assertEquals(enSpelling.map((i) => `${i.noteId}/${i.cardKind}`), ["en/spelling"]);
 
   // Unscoped is still everything, and nothing is counted twice.
   const all = await getDueQueue(store, "u1", NOW);
   assertEquals(all.length, 5);
+});
+
+Deno.test("Grammar and Pronunciation split by language; per-language decks don't", async () => {
+  const store = new InMemoryStore();
+  seedConfig(store, "u1", { dailyNewLimit: 50, dailyReviewLimit: 50 });
+  seedNote(store, "g-uk", { deck: "Grammar" });
+  seedNote(store, "g-en", { deck: "Grammar", language: "en" });
+  seedNote(store, "p-uk", { deck: "Pronunciation", kind: "pronunciation" });
+  seedNote(store, "vocab", { deck: "Ukrainian" });
+
+  assertEquals((await store.getDecks("u1")).sort(), [
+    "English Grammar",
+    "Ukrainian",
+    "Ukrainian Grammar",
+    "Ukrainian Pronunciation",
+  ]);
+  assertEquals(noteIds(await getDueQueue(store, "u1", NOW, "Ukrainian Grammar")), ["g-uk"]);
+  assertEquals(noteIds(await getDueQueue(store, "u1", NOW, "English Grammar")), ["g-en"]);
+  assertEquals(noteIds(await getDueQueue(store, "u1", NOW, "Ukrainian Pronunciation")), ["p-uk"]);
+  // The old combined names no longer open anything.
+  assertEquals(await getDueQueue(store, "u1", NOW, "Grammar"), []);
+  assertEquals(await getDueQueue(store, "u1", NOW, "Spelling"), []);
 });
 
 Deno.test("deck summaries agree with what pressing into the deck offers", async () => {
@@ -989,7 +1009,7 @@ Deno.test("deck summaries agree with what pressing into the deck offers", async 
       `${summary.deck}: the row's counts must match the queue it opens`,
     );
   }
-  assertEquals(summaries.find((s) => s.deck === "Spelling")?.newCount, 1);
+  assertEquals(summaries.find((s) => s.deck === "Ukrainian Spelling")?.newCount, 1);
   assertEquals(summaries.find((s) => s.deck === "Ukrainian")?.newCount, 2);
 });
 
