@@ -223,10 +223,11 @@ export async function getMe(store: Store, userId: string, now: Date): Promise<Me
   const people = await store.getPeople();
   const since = new Date(now.getTime() - STREAK_LOOKBACK_DAYS * 86_400_000);
   const summaries = await Promise.all(people.map(async (person) => {
-    const [reviews, config] = await Promise.all([
-      store.getReviewsSince(person.id, since),
+    const [times, config] = await Promise.all([
+      store.getReviewTimesSince(person.id, since),
       store.getSchedulerConfig(person.id).catch(() => null),
     ]);
+    const reviews = times.map((reviewedAt) => ({ reviewedAt }));
     const boundary = config ? dayBoundary(config) : undefined;
     const today = boundary ? ankiDayKey(now, boundary) : null;
     return {

@@ -89,6 +89,10 @@ export interface Store {
    * pass a `since` far in the past; a real `PostgresStore` may eventually want a
    * smarter query for those two, but nothing here needs one yet. */
   getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]>;
+  /** Just the instants of this user's reviews since `since` -- all a streak or a
+   * day's count needs. The deck list's header (getMe) reads a year of it for both
+   * people on every open, so it fetches one column, not whole review rows. */
+  getReviewTimesSince(userId: string, since: Date): Promise<Date[]>;
   /** How many notes are in each scheduling bucket right now — the stats screen's
    * collection-composition breakdown, independent of what's due today. */
   getCardStateCounts(userId: string): Promise<StateCounts>;
@@ -270,6 +274,10 @@ export class InMemoryStore implements Store {
     return Promise.resolve(
       [...this.reviews.values()].filter((r) => r.userId === userId && r.reviewedAt.getTime() >= since.getTime()),
     );
+  }
+
+  getReviewTimesSince(userId: string, since: Date): Promise<Date[]> {
+    return this.getReviewsSince(userId, since).then((rows) => rows.map((r) => r.reviewedAt));
   }
 
   getCardStateCounts(_userId: string): Promise<StateCounts> {

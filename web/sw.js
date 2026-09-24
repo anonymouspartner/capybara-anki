@@ -15,7 +15,7 @@
 // itself — a service worker has no `Authorization` header to send, and the
 // page already has one.
 
-const CACHE_NAME = "capybara-anki-shell-v7";
+const CACHE_NAME = "capybara-anki-shell-v8";
 const AUDIO_CACHE_NAME = "capybara-anki-audio-v1";
 // Hosted on GitHub Pages (a project site: https://<owner>.github.io/<repo>/,
 // not domain root) — these are resolved against sw.js's own URL at runtime,

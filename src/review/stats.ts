@@ -72,7 +72,7 @@ export function lapseCount(reviews: ReviewRow[]): number {
 /** Consecutive days with at least one review, walking back from today. Today not
  * having a review yet doesn't break a streak that's still active — only a missed
  * *prior* day does — so the walk starts at yesterday whenever today is still empty. */
-export function currentStreak(reviews: ReviewRow[], now: Date, boundary: DayBoundary): number {
+export function currentStreak(reviews: Pick<ReviewRow, "reviewedAt">[], now: Date, boundary: DayBoundary): number {
   const daysWithReviews = new Set(reviews.map((r) => ankiDayKey(r.reviewedAt, boundary)));
   let cursor = ankiDayKey(now, boundary);
   if (!daysWithReviews.has(cursor)) {
