@@ -20,7 +20,7 @@ import {
   validateSettingsEdit,
 } from "./mutations.ts";
 import { replayCardState } from "../fsrs/replay.ts";
-import { computeStats, type StatsResult } from "./stats.ts";
+import { computeStats, currentStreak, type StatsResult } from "./stats.ts";
 import { ankiDayKey, type DayBoundary } from "./day.ts";
 import type {
   CardKind,
@@ -34,6 +34,7 @@ import type {
 } from "./types.ts";
 import type { FsrsSchedulerParams } from "../fsrs/types.ts";
 import { cardKey, type Store } from "./store.ts";
+import { languageOfDeck } from "./types.ts";
 
 function toFsrsParams(config: SchedulerConfigRow): FsrsSchedulerParams {
   return {
@@ -78,6 +79,9 @@ export async function getDueQueue(
 
 export interface DeckSummary extends QueueSummary {
   deck: string;
+  /** Whose deck this is, by language (languageOfDeck) -- the deck list groups
+   * rows under the person learning it. Absent for a deck named for neither. */
+  language?: "uk" | "en";
 }
 
 /** GET the deck-list screen's row set: every deck this user has notes in, each
@@ -100,7 +104,7 @@ export async function getDeckSummaries(store: Store, userId: string, now: Date):
   return Promise.all(
     decks.map(async (deck) => {
       const candidates = await store.getDueCandidates(userId, now, deck);
-      return { deck, ...summarizeDueQueue(candidates, limits, counts, now) };
+      return { deck, language: languageOfDeck(deck), ...summarizeDueQueue(candidates, limits, counts, now) };
     }),
   );
 }
@@ -183,6 +187,60 @@ export async function getStats(
     store.getSchedulerConfig(userId),
   ]);
   return computeStats(reviews, cardCounts, now, days, dayBoundary(config));
+}
+
+/** Cards a day that count as "done for today" on the deck list's goal bar -- a
+ * fixed target rather than a setting, so it needs no schema change. Reaching it
+ * is only encouragement: the daily new/review limits still decide what's due. */
+export const DAILY_GOAL_CARDS = 20;
+
+/** How far back a streak is walked. A year covers any streak worth showing; the
+ * all-time log (thousands of imported reviews) isn't needed to count one. */
+const STREAK_LOOKBACK_DAYS = 400;
+
+export interface PersonSummary {
+  id: string;
+  name: string;
+  learningLanguage: string | null;
+  isYou: boolean;
+  /** Consecutive days with a review, on this person's own day boundary. */
+  streak: number;
+  /** Reviews this person has given since their own day started. */
+  reviewedToday: number;
+}
+
+export interface MeResult {
+  people: PersonSummary[];
+  dailyGoal: number;
+}
+
+/** GET the deck list's header: everyone this collection belongs to, which of
+ * them is asking, and each one's streak and progress today -- each on their
+ * OWN day boundary (Kyiv and wherever the other person is roll over at
+ * different instants). Both people are visible to both: this is a two-person
+ * app, and a shared streak you can see is half the point of showing one. */
+export async function getMe(store: Store, userId: string, now: Date): Promise<MeResult> {
+  const people = await store.getPeople();
+  const since = new Date(now.getTime() - STREAK_LOOKBACK_DAYS * 86_400_000);
+  const summaries = await Promise.all(people.map(async (person) => {
+    const [reviews, config] = await Promise.all([
+      store.getReviewsSince(person.id, since),
+      store.getSchedulerConfig(person.id).catch(() => null),
+    ]);
+    const boundary = config ? dayBoundary(config) : undefined;
+    const today = boundary ? ankiDayKey(now, boundary) : null;
+    return {
+      id: person.id,
+      name: person.displayName?.trim() || "Someone",
+      learningLanguage: person.learningLanguage,
+      isYou: person.id === userId,
+      streak: boundary ? currentStreak(reviews, now, boundary) : 0,
+      reviewedToday: boundary ? reviews.filter((r) => ankiDayKey(r.reviewedAt, boundary) === today).length : 0,
+    };
+  }));
+  // The viewer first, so "your" decks lead the list.
+  summaries.sort((a, b) => Number(b.isYou) - Number(a.isYou));
+  return { people: summaries, dailyGoal: DAILY_GOAL_CARDS };
 }
 
 /** GET every pronunciation note's (D18) reference audio URL — the offline

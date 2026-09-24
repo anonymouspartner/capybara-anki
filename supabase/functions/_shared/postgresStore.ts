@@ -52,6 +52,7 @@ import type {
   DueItem,
   NewNote,
   NoteRow,
+  PersonRow,
   ReviewRow,
   SchedulerConfigRow,
   StateCounts,
@@ -354,6 +355,19 @@ export class PostgresStore implements Store {
   /** Phase 5.4's manifest source — every pronunciation note's audio URL,
    * paged the same way getDecks is (nothing here is bounded by user, so a
    * single language or deck's row count is no ceiling on this one either). */
+  async getPeople(): Promise<PersonRow[]> {
+    // capybara-bot's own table; two rows for a couple, so no paging.
+    const { data, error } = await this.client
+      .from("users")
+      .select("id, display_name, learning_language");
+    if (error) throw new Error(`getPeople: ${error.message}`);
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      displayName: (row.display_name as string | null) ?? null,
+      learningLanguage: (row.learning_language as string | null) ?? null,
+    }));
+  }
+
   async getPronunciationAudioUrls(_userId: string): Promise<string[]> {
     const urls: string[] = [];
     for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {

@@ -29,7 +29,7 @@
 
 import * as offline from "./offline.js";
 import { authHeader, captureTokenFromUrl, isTelegramMiniApp } from "./auth.js";
-import { initTelegram } from "./telegram.js";
+import { haptic, initTelegram } from "./telegram.js";
 import { API_BASE } from "./config.js";
 
 async function api(path, options = {}) {
@@ -102,6 +102,15 @@ const state = {
   // keystroke can outlive a re-render.
   spellingAnswer: "",
   pronunciationResult: null, // { transcript, similarity, bucket, rating } | { error } | null
+  // GET /sync/me: who's who, streaks, today's progress. null when the server is
+  // older than the endpoint, or offline with nothing cached -- the deck list then
+  // falls back to one ungrouped list.
+  me: null,
+  // Whether the other person's decks are unfolded on the deck list.
+  partnerOpen: false,
+  // The deck session in progress, for the progress bar and the end-of-session
+  // screen: { startedAt, answered, again }.
+  session: null,
 };
 
 /** Formats a due date as AnkiDroid's own short interval label ("<1m", "10m", "4d",
@@ -150,7 +159,15 @@ async function showDeckList() {
 
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;
   try {
-    state.decks = await api("/sync/decks");
+    // /sync/me is optional polish: a failure there (an older server, offline with
+    // nothing cached) must not cost the deck list itself.
+    [state.decks, state.me] = await Promise.all([
+      api("/sync/decks"),
+      api("/sync/me").catch((e) => {
+        console.error("/sync/me failed", e);
+        return null;
+      }),
+    ]);
   } catch (e) {
     // Inside Telegram a 401 has one likely cause worth naming: the credential
     // was signed correctly, but this Telegram account isn't one of the two this
@@ -165,30 +182,136 @@ async function showDeckList() {
   renderDeckList();
 }
 
+const LANGUAGE_NAMES = { uk: "Ukrainian", en: "English" };
+const LANGUAGE_FLAGS = { uk: "🇺🇦", en: "🇬🇧" };
+
+/** A deck's language, from the server when it says (DeckSummary.language),
+ * otherwise from the name -- the same rule as src/review/types.ts's
+ * languageOfDeck, for a server that predates the field. */
+function deckLanguage(d) {
+  if (d.language) return d.language;
+  for (const [code, name] of Object.entries(LANGUAGE_NAMES)) {
+    if (d.deck === name || d.deck.startsWith(`${name} `)) return code;
+  }
+  return undefined;
+}
+
+/** Inside a person's group the language is already said once in the header, so
+ * a row reads by its topic: "Ukrainian Spelling" -> "Spelling", and the plain
+ * language deck -> "Vocabulary". */
+function deckTopic(d) {
+  const name = LANGUAGE_NAMES[deckLanguage(d)];
+  if (!name) return d.deck;
+  if (d.deck === name) return "Vocabulary";
+  return d.deck.slice(name.length + 1);
+}
+
+const TOPIC_ICONS = { Vocabulary: "📘", Spelling: "✏️", Grammar: "🧩", Pronunciation: "🎙️" };
+
+function dueCount(d) {
+  return d.newCount + d.learningCount + d.reviewCount;
+}
+
+function deckRowHtml(d, { grouped }) {
+  const label = grouped ? deckTopic(d) : d.deck;
+  return `
+    <div class="deck-row" data-deck="${escapeHtml(d.deck)}">
+      <span class="deck-icon">${TOPIC_ICONS[deckTopic(d)] ?? "🗂️"}</span>
+      <span class="deck-name">${escapeHtml(label)}</span>
+      <span class="deck-counts">
+        <span class="new">${d.newCount}</span>
+        <span class="learning">${d.learningCount}</span>
+        <span class="review">${d.reviewCount}</span>
+      </span>
+    </div>
+  `;
+}
+
+/** One person's block: who they are, their streak, today's goal, a big START
+ * into their first deck with anything due, and their decks. The other person's
+ * decks stay folded by default -- studying them spends that person's schedule
+ * (one schedule per card, shared collection), so it should be deliberate. */
+function personHtml(person, decks, dailyGoal) {
+  const firstDue = decks.find((d) => dueCount(d) > 0);
+  const lang = person.learningLanguage;
+  const learning = LANGUAGE_NAMES[lang] ? `learning ${LANGUAGE_FLAGS[lang]} ${LANGUAGE_NAMES[lang]}` : "";
+  const goalPct = Math.min(100, Math.round((person.reviewedToday / dailyGoal) * 100));
+  const open = person.isYou || state.partnerOpen;
+  const streakDays = `${person.streak} day${person.streak === 1 ? "" : "s"}`;
+  return `
+    <section class="person ${person.isYou ? "you" : "partner"}">
+      <div class="person-head">
+        <div class="avatar">${escapeHtml(person.name.slice(0, 1).toUpperCase())}</div>
+        <div class="person-who">
+          <div class="person-name">${escapeHtml(person.isYou ? `${person.name} (you)` : person.name)}</div>
+          <div class="person-sub">${learning}</div>
+        </div>
+        <div class="streak ${person.streak > 0 ? "" : "cold"}" title="Streak: ${streakDays}">🔥 ${person.streak}</div>
+      </div>
+      <div class="goal">
+        <div class="goal-label">
+          <span>Daily goal</span>
+          <span>${Math.min(person.reviewedToday, dailyGoal)} / ${dailyGoal}${person.reviewedToday >= dailyGoal ? " ✓" : ""}</span>
+        </div>
+        <div class="progress ${person.reviewedToday >= dailyGoal ? "gold" : ""}"><span style="width:${goalPct}%"></span></div>
+      </div>
+      ${
+        person.isYou
+          ? firstDue
+            ? `<button class="btn-3d start-btn" data-deck="${escapeHtml(firstDue.deck)}">Start · ${escapeHtml(deckTopic(firstDue))}</button>`
+            : `<div class="all-done">✓ All caught up for today</div>`
+          : `<button class="partner-toggle">${open ? "Hide" : "Show"} ${escapeHtml(person.name)}'s decks</button>`
+      }
+      ${
+        open
+          ? `${!person.isYou ? `<div class="partner-note">These are ${escapeHtml(person.name)}'s — studying them changes ${escapeHtml(person.name)}'s schedule.</div>` : ""}
+             ${decks.map((d) => deckRowHtml(d, { grouped: true })).join("")}`
+          : ""
+      }
+    </section>
+  `;
+}
+
 function renderDeckList() {
-  const totalDue = state.decks.reduce((sum, d) => sum + d.newCount + d.learningCount + d.reviewCount, 0);
+  const people = state.me?.people ?? [];
+  const you = people.find((p) => p.isYou);
+  // The title counts what's due for YOU when that's known -- the other person's
+  // decks aren't yours to clear.
+  const yours = you ? state.decks.filter((d) => deckLanguage(d) === you.learningLanguage) : state.decks;
+  const totalDue = yours.reduce((sum, d) => sum + dueCount(d), 0);
   titleEl.textContent = `Capybara — ${totalDue} due`;
 
-  contentEl.innerHTML = `
-    ${
-      state.decks.map((d) => `
-        <div class="deck-row" data-deck="${escapeHtml(d.deck)}">
-          <span class="deck-name">${escapeHtml(d.deck)}</span>
-          <span class="deck-counts">
-            <span class="new">${d.newCount}</span>
-            <span class="learning">${d.learningCount}</span>
-            <span class="review">${d.reviewCount}</span>
-          </span>
-        </div>
-      `).join("")
+  let body;
+  if (people.length > 0) {
+    const claimed = new Set();
+    body = people.map((person) => {
+      const decks = state.decks.filter((d) => deckLanguage(d) === person.learningLanguage);
+      decks.forEach((d) => claimed.add(d.deck));
+      return personHtml(person, decks, state.me.dailyGoal ?? 20);
+    }).join("");
+    const other = state.decks.filter((d) => !claimed.has(d.deck));
+    if (other.length > 0) {
+      body += `<section class="person"><div class="person-name">Shared</div>${
+        other.map((d) => deckRowHtml(d, { grouped: false })).join("")
+      }</section>`;
     }
+  } else {
+    body = state.decks.map((d) => deckRowHtml(d, { grouped: false })).join("");
+  }
+
+  contentEl.innerHTML = `
+    ${body}
     <div id="session-footer">
       Studied ${state.sessionCount} card${state.sessionCount === 1 ? "" : "s"} this session
       · <a href="./stats.html">Stats</a>
     </div>
   `;
-  contentEl.querySelectorAll(".deck-row").forEach((row) => {
-    row.addEventListener("click", () => enterDeck(row.dataset.deck));
+  contentEl.querySelectorAll(".deck-row, .start-btn").forEach((el) => {
+    el.addEventListener("click", () => enterDeck(el.dataset.deck));
+  });
+  contentEl.querySelector(".partner-toggle")?.addEventListener("click", () => {
+    state.partnerOpen = !state.partnerOpen;
+    renderDeckList();
   });
 }
 
@@ -428,6 +551,7 @@ async function saveSettings() {
 async function enterDeck(deck) {
   state.view = "review";
   state.currentDeck = deck;
+  state.session = { startedAt: Date.now(), answered: 0, again: 0 };
   state.index = 0;
   state.revealed = false;
   state.editing = false;
@@ -457,7 +581,9 @@ function currentNote() {
 
 async function updateStatsStrip() {
   const deckSummary = state.decks.find((d) => d.deck === state.currentDeck);
-  if (!deckSummary) {
+  // A refresh can land after the session's last card (it isn't awaited), and
+  // must not bring the strip back over the session-complete screen.
+  if (!deckSummary || state.view !== "review" || !currentNote()) {
     statsStrip.hidden = true;
     return;
   }
@@ -512,9 +638,63 @@ async function flushPendingReviews() {
 
 globalThis.addEventListener("online", flushPendingReviews);
 
+/** The thick bar across the top of a session: answered / (answered + left).
+ * The queue shrinks as cards are answered (advance()), so this needs no count
+ * kept anywhere but the session's own. */
+function progressHtml() {
+  const answered = state.session?.answered ?? 0;
+  const total = answered + state.queue.length;
+  const pct = total > 0 ? Math.round((answered / total) * 100) : 0;
+  return `<div id="session-progress" class="progress"><span style="width:${pct}%"></span></div>`;
+}
+
+function formatDuration(ms) {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** The end of a deck session: how many, how well, how long, and the streak --
+ * Duolingo's lesson-complete screen. "Accuracy" is the share of answers that
+ * weren't Again, the one rating that means "didn't know it". */
+function renderSessionComplete() {
+  const { answered, again, startedAt } = state.session;
+  const accuracy = Math.round(((answered - again) / answered) * 100);
+  statsStrip.hidden = true;
+  hideNotice();
+  contentEl.innerHTML = `
+    <div id="complete">
+      <div class="hero">🎉</div>
+      <h2>Session complete!</h2>
+      <div class="tiles">
+        <div class="tile cards"><div class="tile-label">Cards</div><div class="tile-value">${answered}</div></div>
+        <div class="tile accuracy"><div class="tile-label">Accuracy</div><div class="tile-value">${accuracy}%</div></div>
+        <div class="tile time"><div class="tile-label">Time</div><div class="tile-value">${formatDuration(Date.now() - startedAt)}</div></div>
+      </div>
+      <div class="streak-line" id="complete-streak"></div>
+      <button class="btn-3d" id="complete-continue">Continue</button>
+    </div>
+  `;
+  document.getElementById("complete-continue").addEventListener("click", showDeckList);
+  haptic("success");
+  // The streak is the server's to count (each person's own day boundary), so ask
+  // rather than guess; it fills in when it lands, and stays blank offline.
+  api("/sync/me").then((me) => {
+    state.me = me;
+    const you = me?.people?.find((p) => p.isYou);
+    const el = document.getElementById("complete-streak");
+    if (you && el && you.streak > 0) el.textContent = `🔥 ${you.streak} day streak`;
+  }).catch((e) => console.error("/sync/me failed", e));
+}
+
 function renderReview() {
   const note = currentNote();
   if (!note) {
+    if (state.session?.answered > 0) {
+      renderSessionComplete();
+      return;
+    }
     contentEl.innerHTML = `<div id="empty">Nothing due in ${escapeHtml(state.currentDeck)} right now. 🎉</div>`;
     return;
   }
@@ -535,6 +715,7 @@ function renderReview() {
   }
 
   contentEl.innerHTML = `
+    ${progressHtml()}
     <div id="card">
       <div id="lemma">${escapeHtml(note.lemma)}</div>
       <div id="back" class="${state.revealed ? "visible" : ""}">
@@ -566,7 +747,7 @@ function renderReview() {
                <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, now)}</span><span>Easy</span></button>
              </div>`;
             })()
-          : `<button id="reveal-btn">Show answer</button>`
+          : `<button id="reveal-btn" class="btn-3d blue">Show answer</button>`
       }
     </div>
   `;
@@ -685,6 +866,10 @@ async function undoLast() {
   }
   hideNotice();
   state.sessionCount = Math.max(0, state.sessionCount - 1);
+  if (state.session) {
+    state.session.answered = Math.max(0, state.session.answered - 1);
+    if (last.rating === 1) state.session.again = Math.max(0, state.session.again - 1);
+  }
   // Put it back where it was taken from, unrevealed, so undo lands you on the
   // card you meant to answer rather than somewhere else in the queue. Its
   // interval previews came from the state the server has just restored, so they
@@ -712,7 +897,12 @@ async function submitRating(rating) {
     }),
   });
   state.sessionCount++;
-  state.lastAnswered = { note, index, reviewId, queued: result?.queued === true };
+  if (state.session) {
+    state.session.answered++;
+    if (rating === 1) state.session.again++;
+  }
+  haptic("tap");
+  state.lastAnswered = { note, index, reviewId, rating, queued: result?.queued === true };
   // `leech` is only present from a server new enough to send it; older ones
   // simply fall through to the plain notice.
   if (result?.leech) {
@@ -805,6 +995,7 @@ function renderSpellingReview(note) {
   const dots = "· ".repeat(note.lemma.length).trim();
 
   contentEl.innerHTML = `
+    ${progressHtml()}
     <div id="card">
       <div class="card-kind-badge">Spell the word for</div>
       <div id="lemma">${escapeHtml(note.lemmaTranslation ?? "")}</div>
@@ -816,10 +1007,10 @@ function renderSpellingReview(note) {
         state.revealed
           ? `<div id="back" class="visible">
                <hr class="divider" />
-               <div id="spelling-verdict" class="${spellingIsCorrect(answer, note.lemma) ? "right" : "wrong"}">
-                 ${spellingIsCorrect(answer, note.lemma) ? "Correct" : "Not quite"}
+               <div id="spelling-verdict" class="verdict-banner ${spellingIsCorrect(answer, note.lemma) ? "right" : "wrong"}">
+                 ${spellingIsCorrect(answer, note.lemma) ? "✓ Correct!" : "✗ Not quite"}
+                 ${answer ? `<div class="sub">You typed: ${escapeHtml(answer)}</div>` : ""}
                </div>
-               ${answer ? `<div class="spelling-typed">You typed: ${escapeHtml(answer)}</div>` : ""}
                <div id="spelling-answer">${escapeHtml(note.lemma)}</div>
                ${note.example ? `<div class="example">${escapeHtml(note.example)}</div>` : ""}
                ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
@@ -849,7 +1040,7 @@ function renderSpellingReview(note) {
                <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, now)}</span><span>Easy</span></button>
              </div>`;
             })()
-          : `<button id="reveal-btn">Check</button>`
+          : `<button id="reveal-btn" class="btn-3d">Check</button>`
       }
     </div>
   `;
@@ -865,6 +1056,7 @@ function renderSpellingReview(note) {
       if (e.key === "Enter") {
         state.spellingAnswer = input.value;
         state.revealed = true;
+        haptic(spellingIsCorrect(state.spellingAnswer, note.lemma) ? "success" : "error");
         renderReview();
       }
     });
@@ -873,6 +1065,7 @@ function renderSpellingReview(note) {
   document.getElementById("reveal-btn")?.addEventListener("click", () => {
     state.spellingAnswer = document.getElementById("spelling-input")?.value ?? "";
     state.revealed = true;
+    haptic(spellingIsCorrect(state.spellingAnswer, note.lemma) ? "success" : "error");
     renderReview();
   });
   contentEl.querySelectorAll("[data-rating]").forEach((btn) => {
@@ -993,6 +1186,7 @@ async function stopAndScore() {
     });
     state.pronunciationResult = result;
     state.recording = "scored";
+    haptic(result.bucket === "right" ? "success" : result.bucket === "close" ? "warning" : "error");
   } catch (e) {
     console.error(e);
     state.pronunciationResult = { error: e.message ?? "Scoring failed. Try again." };
@@ -1012,6 +1206,7 @@ async function continueAfterScore() {
 function renderPronunciationReview(note) {
   const result = state.pronunciationResult;
   contentEl.innerHTML = `
+    ${progressHtml()}
     <div id="card">
       <div id="lemma">${escapeHtml(note.lemma)}</div>
       <div class="translation">${escapeHtml(note.lemmaTranslation)}</div>
@@ -1037,7 +1232,7 @@ function renderPronunciationReview(note) {
                <div class="bucket-label">${result.bucket.toUpperCase()}</div>
                <div class="transcript">Heard: "${escapeHtml(result.transcript)}"</div>
              </div>
-             <button id="continue-btn">Continue</button>`
+             <button id="continue-btn" class="btn-3d">Continue</button>`
           : ""
       }
       ${result?.error ? `<div id="pronunciation-error">${escapeHtml(result.error)}</div>` : ""}

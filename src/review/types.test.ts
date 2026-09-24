@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@^1";
-import { deckOfCard, notesForDeck } from "./types.ts";
+import { deckOfCard, languageOfDeck, notesForDeck } from "./types.ts";
 
 Deno.test("deckOfCard: shared decks split by language, per-language decks stay put", () => {
   assertEquals(deckOfCard("Ukrainian", "recall", "uk"), "Ukrainian");
@@ -38,4 +38,13 @@ Deno.test("notesForDeck never narrows away a card deckOfCard would place in the 
   assertEquals(notesForDeck("Ukrainian"), { deck: "Ukrainian" });
   assertEquals(notesForDeck("English Spelling"), { language: "en" });
   assertEquals(notesForDeck("Ukrainian Grammar"), { language: "uk" });
+});
+
+Deno.test("languageOfDeck: a language's own deck and every deck prefixed with its name", () => {
+  assertEquals(languageOfDeck("Ukrainian"), "uk");
+  assertEquals(languageOfDeck("Ukrainian Pronunciation"), "uk");
+  assertEquals(languageOfDeck("English"), "en");
+  assertEquals(languageOfDeck("English Spelling"), "en");
+  assertEquals(languageOfDeck("Grammar"), undefined);
+  assertEquals(languageOfDeck("Englishish"), undefined);
 });

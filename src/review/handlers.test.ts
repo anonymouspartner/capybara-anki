@@ -8,6 +8,7 @@ import {
   getDeckSummaries,
   getDueQueue,
   getDueQueueWithPreviews,
+  getMe,
   getSettings,
   getStats,
   NotFoundError,
@@ -1035,4 +1036,53 @@ Deno.test("a spelling answer counts against the whole collection's daily limit, 
   // Ukrainian's own new card (b) is held back by that shared budget too.
   const ukrainianQueue = await getDueQueue(store, "u1", NOW, "Ukrainian");
   assertEquals(noteIds(ukrainianQueue).includes("b"), false);
+});
+
+Deno.test("getDeckSummaries: each row carries the language whose learner it belongs to", async () => {
+  const store = new InMemoryStore();
+  seedNote(store, "uk-1", { deck: "Ukrainian", hasSpelling: true });
+  seedNote(store, "en-1", { deck: "English", language: "en" });
+  seedNote(store, "gr-1", { deck: "Grammar", language: "en" });
+  seedConfig(store, "tim");
+
+  const byDeck = Object.fromEntries((await getDeckSummaries(store, "tim", NOW)).map((s) => [s.deck, s.language]));
+  assertEquals(byDeck["Ukrainian"], "uk");
+  assertEquals(byDeck["Ukrainian Spelling"], "uk");
+  assertEquals(byDeck["English"], "en");
+  assertEquals(byDeck["English Grammar"], "en");
+});
+
+Deno.test("getMe: both people, viewer first, each with their own streak and today's count", async () => {
+  const store = new InMemoryStore();
+  store.people = [
+    { id: "vika", displayName: "Vika", learningLanguage: "en" },
+    { id: "tim", displayName: "Tim", learningLanguage: "uk" },
+  ];
+  seedConfig(store, "tim");
+  seedConfig(store, "vika");
+  seedNote(store, "uk-1");
+  seedNote(store, "en-1", { language: "en", deck: "English" });
+  const day = 86_400_000;
+  // Tim: yesterday and the day before, nothing yet today -- a live 2-day streak.
+  for (const [i, offset] of [[1, 2], [2, 1]] as const) { // oldest first
+    await submitReview(store, {
+      reviewId: `t${i}`, noteId: "uk-1", cardKind: "recall", userId: "tim", rating: 3,
+      reviewedAt: new Date(NOW.getTime() - offset * day),
+    });
+  }
+  // Vika: twice today.
+  for (const i of [2, 1]) { // oldest first
+    await submitReview(store, {
+      reviewId: `v${i}`, noteId: "en-1", cardKind: "recall", userId: "vika", rating: 3,
+      reviewedAt: new Date(NOW.getTime() - i * 60_000),
+    });
+  }
+
+  const me = await getMe(store, "tim", NOW);
+  assertEquals(me.people.map((p) => [p.name, p.isYou]), [["Tim", true], ["Vika", false]]);
+  assertEquals(me.people[0].streak, 2);
+  assertEquals(me.people[0].reviewedToday, 0);
+  assertEquals(me.people[1].streak, 1);
+  assertEquals(me.people[1].reviewedToday, 2);
+  assertEquals(me.dailyGoal > 0, true);
 });
