@@ -24,6 +24,7 @@ import {
   getAudioManifest,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getMe,
   getSettings,
   getStats,
   setSuspended,
@@ -40,6 +41,9 @@ import { scoreAttempt } from "../src/pronunciation/score.ts";
 
 const DEMO_TOKEN = "demo-token";
 const DEMO_USER = "demo-user";
+// A second, fictional person, so the deck list's per-person grouping has two
+// groups to show. Never a real name -- this file is public.
+const DEMO_PARTNER = "demo-partner";
 
 const store = new InMemoryStore();
 store.schedulerConfigs.set(DEMO_USER, {
@@ -118,6 +122,11 @@ const demoNotes: NoteRow[] = [
   },
 ];
 for (const note of demoNotes) store.notes.set(note.id, note);
+store.people = [
+  { id: DEMO_USER, displayName: "Demo learner", learningLanguage: "uk" },
+  { id: DEMO_PARTNER, displayName: "Demo partner", learningLanguage: "en" },
+];
+store.schedulerConfigs.set(DEMO_PARTNER, { ...store.schedulerConfigs.get(DEMO_USER)!, userId: DEMO_PARTNER });
 
 // One already-reviewed, currently-due card, so the deck list and review flow both
 // have more than "all new" to show.
@@ -241,6 +250,9 @@ Deno.serve({ port: 8787 }, async (req) => {
 
   if (req.method === "GET" && url.pathname === "/sync/decks") {
     return json(await getDeckSummaries(store, DEMO_USER, new Date()));
+  }
+  if (req.method === "GET" && url.pathname === "/sync/me") {
+    return json(await getMe(store, DEMO_USER, new Date()));
   }
   if (req.method === "GET" && url.pathname === "/sync/due") {
     const deck = url.searchParams.get("deck") ?? undefined;

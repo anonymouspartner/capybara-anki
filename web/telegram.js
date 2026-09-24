@@ -65,3 +65,22 @@ export function initTelegram() {
     return false;
   }
 }
+
+/** A small physical tap to go with an answer -- Duolingo pairs every verdict
+ * with one. Telegram's HapticFeedback, where the client offers it; a no-op
+ * everywhere else (a browser tab, or a client too old to have it).
+ *
+ *   haptic("tap")      -- a button press (a rating)
+ *   haptic("success")  -- a right answer, a finished session
+ *   haptic("error")    -- a wrong answer
+ */
+export function haptic(kind) {
+  const feedback = globalThis.Telegram?.WebApp?.HapticFeedback;
+  if (!feedback) return;
+  try {
+    if (kind === "tap") feedback.impactOccurred("light");
+    else feedback.notificationOccurred(kind);
+  } catch (e) {
+    console.error("haptic failed", e);
+  }
+}

@@ -79,6 +79,28 @@ export function notesForDeck(deck: string): { language?: "uk" | "en"; deck?: str
   return { deck };
 }
 
+/** Which language a deck-list name belongs to -- "Ukrainian" and every
+ * "Ukrainian <topic>" (the split decks deckOfCard produces, or a stored name
+ * like "English Pronunciation") is uk, likewise for English. Anything else --
+ * a deck named for neither language -- has none. The deck list groups rows by
+ * this to show each person the decks of the language they're learning (see
+ * PersonRow), since that grouping is exactly what keeps one person's schedule
+ * from being spent by the other (postgresStore.ts's class docstring). */
+export function languageOfDeck(deck: string): "uk" | "en" | undefined {
+  for (const [language, name] of Object.entries(LANGUAGE_NAME) as Array<["uk" | "en", string]>) {
+    if (deck === name || deck.startsWith(`${name} `)) return language;
+  }
+  return undefined;
+}
+
+/** One of the people this collection belongs to -- the `users` rows
+ * capybara-bot provisions, reduced to what the deck list shows. */
+export interface PersonRow {
+  id: string;
+  displayName: string | null;
+  learningLanguage: string | null;
+}
+
 /** D18: what kind of thing a note is, for the reviewer UI's sake — not a
  * different table, since a real export's `Capybara Pronunciation (shadowing)`
  * note type's fields map directly onto the existing vocabulary columns

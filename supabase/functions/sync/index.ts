@@ -75,6 +75,7 @@ import {
   getAudioManifest,
   getDeckSummaries,
   getDueQueueWithPreviews,
+  getMe,
   getSettings,
   getStats,
   NotFoundError,
@@ -114,6 +115,10 @@ async function route(req: Request, store: Store, userId: string): Promise<Respon
 
   if (req.method === "GET" && url.pathname === "/sync/decks") {
     return json(await getDeckSummaries(store, userId, new Date()));
+  }
+
+  if (req.method === "GET" && url.pathname === "/sync/me") {
+    return json(await getMe(store, userId, new Date()));
   }
 
   if (req.method === "GET" && url.pathname === "/sync/due") {

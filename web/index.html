@@ -22,21 +22,89 @@
     font-size: 14px;
     font-variant-numeric: tabular-nums;
   }
+  /* `hidden` has to win over the display these two set -- an id rule's display
+     otherwise beats the attribute's own display:none, which left both showing as
+     empty bands above the deck list (the same trap theme.css notes for
+     .icon-btn). */
+  #stats-strip[hidden], #notice[hidden] { display: none; }
   /* .new/.learning/.review/.pending moved to theme.css — stats.html's collection
      composition blocks need the same three colors, and the bug that made this
      class-not-container-scoped in the first place (see theme.css's own comment)
      applies just as much across pages as within one. */
 
-  /* Deck list */
+  /* Deck list, grouped by person: each person's decks are the language they're
+     learning, and studying only your own group is what keeps the two schedules
+     apart (the collection is shared, one schedule per card). */
+  .person {
+    margin: 16px 0;
+    padding: 16px;
+    border: 2px solid var(--border);
+    border-radius: 16px;
+  }
+  .person-head { display: flex; align-items: center; gap: 12px; }
+  .avatar {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 20px;
+    font-weight: 800;
+    color: #fff;
+    background: var(--duo-blue);
+  }
+  .person.partner .avatar { background: var(--duo-orange); }
+  .person-name { font-size: 18px; font-weight: 800; }
+  .person-sub { font-size: 13px; color: var(--fg-muted); }
+  .person-who { flex: 1; min-width: 0; }
+  .streak {
+    font-weight: 800;
+    font-size: 17px;
+    color: var(--duo-orange);
+    white-space: nowrap;
+  }
+  .streak.cold { color: var(--fg-muted); filter: grayscale(1); }
+  .goal { margin: 14px 0 4px; }
+  .goal-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--fg-muted);
+    margin-bottom: 6px;
+  }
+  .person .btn-3d { margin-top: 14px; }
+  .all-done { margin-top: 14px; text-align: center; font-weight: 700; color: var(--duo-green); }
+  .partner-toggle {
+    width: 100%;
+    margin-top: 10px;
+    background: none;
+    border: none;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    cursor: pointer;
+  }
+  .partner-note { font-size: 12px; color: var(--fg-muted); margin: 8px 2px 0; }
   .deck-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 16px 4px;
-    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 2px solid var(--border);
+    border-bottom-width: 4px;
+    border-radius: 14px;
     cursor: pointer;
+    transition: transform 80ms ease-out, border-bottom-width 80ms ease-out;
+    -webkit-tap-highlight-color: transparent;
   }
-  .deck-row:hover { background: var(--bg-toolbar); }
+  .deck-row:active { transform: translateY(2px); border-bottom-width: 2px; }
+  .deck-icon { font-size: 22px; width: 28px; text-align: center; }
 
   /* The post-answer notice: what was just recorded, and the way back from it.
      Sits under the toolbar rather than floating over the card, because it must
@@ -86,10 +154,8 @@
     border-radius: 0;
   }
   #spelling-input:focus { outline: none; }
-  #spelling-verdict { font-weight: 600; margin-bottom: 4px; }
-  #spelling-verdict.right { color: var(--btn-good); }
-  #spelling-verdict.wrong { color: var(--btn-again); }
-  .spelling-typed { color: var(--fg-muted); font-size: 14px; margin-bottom: 8px; }
+  /* #spelling-verdict is a .verdict-banner (below); only its spacing is local. */
+  #spelling-verdict { margin: 0 -4px 8px; }
   #notice.leech .notice-text { color: var(--btn-again, #c1554a); font-weight: 600; }
   #notice button {
     flex: none;
@@ -101,7 +167,7 @@
     color: var(--fg);
     cursor: pointer;
   }
-  .deck-name { font-size: 16px; }
+  .deck-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 700; }
   .deck-counts { display: flex; gap: 12px; font-size: 15px; font-variant-numeric: tabular-nums; }
   #session-footer {
     text-align: center;
@@ -130,31 +196,76 @@
   .example { margin-top: 14px; }
   .example-translation { color: var(--fg-muted); font-size: 15px; }
 
-  #answer-bar { position: fixed; bottom: 0; left: 0; right: 0; }
-  #reveal-btn {
-    width: 100%;
-    padding: 18px;
-    border: none;
-    background: var(--btn-reveal);
-    color: var(--btn-fg);
-    font-size: 16px;
-    cursor: pointer;
+  /* The session's progress, Duolingo-style: a thick bar across the top that
+     fills as cards are answered. */
+  #session-progress { margin: 14px 0 0; }
+
+  #answer-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
+    background: var(--bg-page);
+    border-top: 2px solid var(--border);
   }
-  #rating-row { display: flex; }
+  #answer-bar > * { max-width: 480px; margin: 0 auto; }
+  #rating-row { display: flex; gap: 8px; }
   #rating-row button {
     flex: 1;
     border: none;
-    padding: 10px 4px 16px;
+    border-radius: 14px;
+    padding: 8px 4px 10px;
     color: var(--btn-fg);
+    font: inherit;
     font-size: 15px;
+    font-weight: 800;
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
+    box-shadow: 0 var(--press-depth) 0 rgba(0, 0, 0, 0.28);
+    transition: transform 80ms ease-out, box-shadow 80ms ease-out;
+    -webkit-tap-highlight-color: transparent;
   }
-  #rating-row .interval { font-size: 12px; opacity: 0.85; }
+  #rating-row button:active { transform: translateY(var(--press-depth)); box-shadow: 0 0 0 transparent; }
+  #rating-row .interval { font-size: 12px; font-weight: 600; opacity: 0.85; }
+  /* Room under the card for the fixed answer bar, so nothing scrolls behind it. */
+  #card { padding-bottom: 120px; }
+
+  /* Right/wrong banner for the cards that check an answer (spelling,
+     pronunciation): slides up from the bottom, green or red, like Duolingo's. */
+  .verdict-banner {
+    margin: 16px -4px 0;
+    padding: 14px 16px;
+    border-radius: 14px;
+    font-size: 18px;
+    font-weight: 800;
+    text-align: left;
+    animation: slide-up 200ms ease-out;
+  }
+  .verdict-banner.right { background: color-mix(in srgb, var(--duo-green) 18%, transparent); color: var(--duo-green-shadow); }
+  .verdict-banner.wrong { background: color-mix(in srgb, var(--duo-red) 16%, transparent); color: var(--duo-red); }
+  .verdict-banner .sub { font-size: 14px; font-weight: 600; margin-top: 4px; color: var(--fg); }
+  @keyframes slide-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  /* End of a session: what you did, then back to the list. */
+  #complete { text-align: center; padding: 40px 0 24px; animation: pop-in 300ms ease-out; }
+  #complete .hero { font-size: 72px; line-height: 1; }
+  #complete h2 { font-size: 26px; font-weight: 800; color: var(--duo-gold); margin: 16px 0 24px; }
+  .tiles { display: flex; gap: 10px; margin-bottom: 20px; }
+  .tile { flex: 1; border: 2px solid var(--tile); border-radius: 14px; overflow: hidden; }
+  .tile .tile-label { background: var(--tile); color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.6px; padding: 4px 0; text-transform: uppercase; }
+  .tile .tile-value { font-size: 20px; font-weight: 800; padding: 10px 0; color: var(--tile); }
+  .tile.cards { --tile: var(--duo-gold); }
+  .tile.accuracy { --tile: var(--duo-green); }
+  .tile.time { --tile: var(--duo-blue); }
+  #complete .streak-line { font-size: 18px; font-weight: 800; color: var(--duo-orange); margin-bottom: 24px; }
+  @keyframes pop-in { from { transform: scale(0.9); opacity: 0; } to { transform: none; opacity: 1; } }
   .rating-again { background: var(--btn-again); }
-  .rating-hard { background: var(--btn-hard-bg); color: var(--btn-hard-fg); }
+  /* Scoped under #rating-row so it outranks that rule's white text, which
+     otherwise left "Hard" unreadable on its light face in light mode. */
+  #rating-row .rating-hard { background: var(--btn-hard-bg); color: var(--btn-hard-fg); }
   .rating-good { background: var(--btn-good); }
   .rating-easy { background: var(--btn-easy); }
 
@@ -211,17 +322,7 @@
   #pronunciation-result.bucket-wrong .bucket-label { color: var(--btn-again); }
   #pronunciation-result .transcript { margin-top: 6px; font-style: italic; color: var(--fg-muted); }
   #pronunciation-error { color: var(--btn-again); font-size: 13px; margin-top: 8px; }
-  #continue-btn {
-    width: 100%;
-    padding: 14px;
-    border: none;
-    border-radius: 8px;
-    background: var(--btn-reveal);
-    color: var(--btn-fg);
-    font-size: 15px;
-    cursor: pointer;
-    margin-top: 8px;
-  }
+  #continue-btn { margin-top: 8px; }
   /* Matches the real Capybara+ Spelling template's `.label` exactly (plain
      uppercase, letter-spaced, no border) — a bordered pill was this app's
      own invention before a real AnkiDroid screenshot showed there isn't

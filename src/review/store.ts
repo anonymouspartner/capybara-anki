@@ -15,6 +15,7 @@ import type {
   DueItem,
   NewNote,
   NoteRow,
+  PersonRow,
   ReviewRow,
   SchedulerConfigRow,
   StateCounts,
@@ -58,6 +59,9 @@ export interface Store {
   /** Every deck name with at least one note this user can review — the deck-list
    * screen's row set. */
   getDecks(userId: string): Promise<string[]>;
+  /** Everyone this collection belongs to (capybara-bot's `users` rows) -- the
+   * deck list's per-person grouping and each person's streak. */
+  getPeople(): Promise<PersonRow[]>;
   /** Every pronunciation note's (D18) reference audio URL, for the offline
    * audio cache (Phase 5.4) to hand the service worker — one shared list, not
    * scoped by `userId`, same "doesn't model per-user access" shape `getDecks`
@@ -127,6 +131,7 @@ export class InMemoryStore implements Store {
   cardStates = new Map<string, CardStateRow>();
   schedulerConfigs = new Map<string, SchedulerConfigRow>();
   reviews = new Map<string, ReviewRow>();
+  people: PersonRow[] = [];
   /** The state a card was in at the moment each review was submitted — needed to
    * classify a past review as "was new" vs "was review" for getDailyCounts, since
    * card_state.state reflects the card's CURRENT state, not what it was back then. */
@@ -134,6 +139,10 @@ export class InMemoryStore implements Store {
 
   getNote(noteId: string): Promise<NoteRow | null> {
     return Promise.resolve(this.notes.get(noteId) ?? null);
+  }
+
+  getPeople(): Promise<PersonRow[]> {
+    return Promise.resolve([...this.people]);
   }
 
   getCardState(noteId: string, cardKind: CardKind): Promise<CardStateRow | null> {
