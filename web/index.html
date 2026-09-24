@@ -231,7 +231,7 @@
   #rating-row button:active { transform: translateY(var(--press-depth)); box-shadow: 0 0 0 transparent; }
   #rating-row .interval { font-size: 12px; font-weight: 600; opacity: 0.85; }
   /* Room under the card for the fixed answer bar, so nothing scrolls behind it. */
-  #card { padding-bottom: 120px; }
+  #card { padding-bottom: 180px; }
 
   /* Right/wrong banner for the cards that check an answer (spelling,
      pronunciation): slides up from the bottom, green or red, like Duolingo's. */
@@ -296,33 +296,93 @@
 
   #empty, #error { text-align: center; padding: 60px 16px; color: var(--fg-muted); }
 
-  /* Pronunciation (D18) — record-and-score instead of reveal-and-rate. */
-  #pronunciation-control { margin: 24px 0; }
-  .mic-btn {
-    width: 84px;
-    height: 84px;
-    border-radius: 50%;
+  /* Pronunciation (D18) — record-and-score instead of reveal-and-rate, laid out
+     like Duolingo's "Speak this sentence": listen buttons, the sentence in a
+     speech bubble, and the one action (speak) as the big button at the bottom,
+     where every other card keeps its action too. */
+  .speak-listen { display: flex; justify-content: center; gap: 12px; margin: 8px 0 18px; }
+  .speaker-btn {
+    --btn-face: var(--duo-blue);
+    --btn-ledge: var(--duo-blue-shadow);
+    width: 72px;
+    height: 72px;
     border: none;
+    border-radius: 18px;
+    background: var(--btn-face);
+    color: #fff;
     font-size: 32px;
     cursor: pointer;
-    background: var(--btn-good);
-    color: var(--btn-fg);
+    box-shadow: 0 var(--press-depth) 0 var(--btn-ledge);
+    transition: transform 80ms ease-out, box-shadow 80ms ease-out;
+    -webkit-tap-highlight-color: transparent;
   }
-  .mic-btn.recording { background: var(--btn-again); }
-  #pronunciation-status { color: var(--fg-muted); font-size: 13px; margin-top: 8px; }
-  #pronunciation-result {
-    margin: 16px 0;
-    padding: 14px;
-    border-radius: 8px;
-    background: var(--bg-toolbar);
+  .speaker-btn:active { transform: translateY(var(--press-depth)); box-shadow: 0 0 0 var(--btn-ledge); }
+  .speaker-btn.slow { width: 56px; height: 56px; font-size: 24px; align-self: flex-end; }
+  .speaker-btn.playing { animation: pulse 900ms ease-in-out infinite; }
+  .bubble {
+    position: relative;
+    padding: 16px 18px;
+    border: 2px solid var(--border);
+    border-radius: 18px;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.35;
   }
-  .bucket-label { font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
-  #pronunciation-result.bucket-right .bucket-label { color: var(--stat-review); }
-  #pronunciation-result.bucket-close .bucket-label { color: var(--btn-hard-fg); }
-  #pronunciation-result.bucket-wrong .bucket-label { color: var(--btn-again); }
-  #pronunciation-result .transcript { margin-top: 6px; font-style: italic; color: var(--fg-muted); }
-  #pronunciation-error { color: var(--btn-again); font-size: 13px; margin-top: 8px; }
-  #continue-btn { margin-top: 8px; }
+  /* The little tail up towards the listen buttons. */
+  .bubble::before {
+    content: "";
+    position: absolute;
+    top: -9px;
+    left: 50%;
+    width: 14px;
+    height: 14px;
+    background: var(--bg-page);
+    border-left: 2px solid var(--border);
+    border-top: 2px solid var(--border);
+    transform: translateX(-50%) rotate(45deg);
+  }
+  .speak-translation { color: var(--fg-muted); font-size: 16px; margin-top: 12px; }
+  .keyword {
+    display: inline-block;
+    align-self: center; /* #card is a flex column; don't stretch the chip */
+    margin-top: 12px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 2px solid var(--border);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--fg-muted);
+  }
+  .speak-status { text-align: center; color: var(--fg-muted); font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .speak-error { text-align: center; color: var(--duo-red); font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+  .btn-3d.recording { --btn-face: var(--duo-red); --btn-ledge: #d33131; animation: pulse 1.2s ease-in-out infinite; }
+  .skip-link {
+    display: block;
+    margin: 12px auto 0;
+    background: none;
+    border: none;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  /* The result, Duolingo-style: the whole bottom sheet turns green, amber or red,
+     with what was heard and a Continue in the same colour. */
+  #answer-bar.result-right { background: color-mix(in srgb, var(--duo-green) 16%, var(--bg-page)); border-top-color: transparent; }
+  #answer-bar.result-close { background: color-mix(in srgb, var(--duo-gold) 18%, var(--bg-page)); border-top-color: transparent; }
+  #answer-bar.result-wrong { background: color-mix(in srgb, var(--duo-red) 14%, var(--bg-page)); border-top-color: transparent; }
+  .result-title { font-size: 22px; font-weight: 800; margin-bottom: 4px; animation: slide-up 200ms ease-out; }
+  .result-right .result-title { color: var(--duo-green-shadow); }
+  .result-close .result-title { color: #d19a00; }
+  .result-wrong .result-title { color: var(--duo-red); }
+  .result-heard { font-size: 15px; margin-bottom: 12px; }
+  .result-heard em { font-style: normal; font-weight: 700; }
+  .btn-3d.close { --btn-face: var(--duo-gold); --btn-ledge: #e0a800; }
+  .btn-3d.wrong { --btn-face: var(--duo-red); --btn-ledge: #d33131; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
   /* Matches the real Capybara+ Spelling template's `.label` exactly (plain
      uppercase, letter-spaced, no border) — a bordered pill was this app's
      own invention before a real AnkiDroid screenshot showed there isn't

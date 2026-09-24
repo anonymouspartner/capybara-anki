@@ -102,6 +102,8 @@ const state = {
   // keystroke can outlive a re-render.
   spellingAnswer: "",
   pronunciationResult: null, // { transcript, similarity, bucket, rating } | { error } | null
+  // The pronunciation card whose reference audio has already auto-played once.
+  autoplayedNoteId: null,
   // GET /sync/me: who's who, streaks, today's progress. null when the server is
   // older than the endpoint, or offline with nothing cached -- the deck list then
   // falls back to one ungrouped list.
@@ -952,6 +954,7 @@ async function deleteCurrent() {
 }
 
 function advance() {
+  referenceAudio?.pause();
   state.queue.splice(state.index, 1);
   state.revealed = false;
   state.editing = false;
@@ -1210,39 +1213,61 @@ async function continueAfterScore() {
   await submitRating(rating);
 }
 
+/** The reference recording, played from our own buttons rather than the
+ * browser's audio bar -- one tap, a normal and a slow speed, like Duolingo's
+ * listen buttons. Kept outside `state` because it's a live media object, and
+ * swapped whenever the card changes. */
+let referenceAudio = null;
+let referenceAudioNoteId = null;
+
+function playReference(note, rate, button) {
+  if (!note.audioUrl) return;
+  if (referenceAudioNoteId !== note.id) {
+    referenceAudio?.pause();
+    referenceAudio = new Audio(note.audioUrl);
+    referenceAudioNoteId = note.id;
+  }
+  referenceAudio.pause();
+  referenceAudio.currentTime = 0;
+  // preservesPitch is the default -- slowed, not lowered.
+  referenceAudio.playbackRate = rate;
+  document.querySelectorAll(".speaker-btn.playing").forEach((b) => b.classList.remove("playing"));
+  button?.classList.add("playing");
+  referenceAudio.onended = () => button?.classList.remove("playing");
+  referenceAudio.play().catch((e) => {
+    // Autoplay without a tap can be refused; the buttons still work.
+    button?.classList.remove("playing");
+    console.error("reference audio didn't play", e);
+  });
+}
+
+const PRONUNCIATION_VERDICTS = {
+  right: { title: "✓ Great job!", button: "" },
+  close: { title: "Almost!", button: "close" },
+  wrong: { title: "Not quite", button: "wrong" },
+};
+
 function renderPronunciationReview(note) {
   const result = state.pronunciationResult;
+  const scored = result && !result.error;
+  const isSentence = note.lemma.trim().split(/\s+/).length > 3;
+  const verdict = scored ? PRONUNCIATION_VERDICTS[result.bucket] ?? PRONUNCIATION_VERDICTS.wrong : null;
+
   contentEl.innerHTML = `
     ${progressHtml()}
     <div id="card">
-      <div id="lemma">${escapeHtml(note.lemma)}</div>
-      <div class="translation">${escapeHtml(note.lemmaTranslation)}</div>
-      ${note.gloss ? `<div class="gloss">${escapeHtml(note.gloss)}</div>` : ""}
-      ${note.audioUrl ? `<audio controls src="${escapeHtml(note.audioUrl)}" style="margin-top: 12px"></audio>` : ""}
-
-      <div id="pronunciation-control">
-        ${
-          state.recording === "recording"
-            ? `<button id="mic-btn" class="mic-btn recording">⏹</button>
-               <div id="pronunciation-status">Recording — tap to stop</div>`
-            : state.recording === "scoring"
-            ? `<button class="mic-btn" disabled>…</button>
-               <div id="pronunciation-status">Scoring…</div>`
-            : `<button id="mic-btn" class="mic-btn">🎤</button>
-               <div id="pronunciation-status">Tap to record yourself saying this</div>`
-        }
-      </div>
-
+      <div class="card-kind-badge">${isSentence ? "Speak this sentence" : "Say this word"}</div>
       ${
-        result && !result.error
-          ? `<div id="pronunciation-result" class="bucket-${result.bucket}">
-               <div class="bucket-label">${result.bucket.toUpperCase()}</div>
-               <div class="transcript">Heard: "${escapeHtml(result.transcript)}"</div>
-             </div>
-             <button id="continue-btn" class="btn-3d">Continue</button>`
+        note.audioUrl
+          ? `<div class="speak-listen">
+               <button class="speaker-btn" id="play-normal" aria-label="Play">🔊</button>
+               <button class="speaker-btn slow" id="play-slow" aria-label="Play slowly">🐢</button>
+             </div>`
           : ""
       }
-      ${result?.error ? `<div id="pronunciation-error">${escapeHtml(result.error)}</div>` : ""}
+      <div class="bubble">${escapeHtml(note.lemma)}</div>
+      ${note.lemmaTranslation ? `<div class="speak-translation">${escapeHtml(note.lemmaTranslation)}</div>` : ""}
+      ${note.gloss && note.gloss !== note.lemmaTranslation ? `<div class="keyword">${escapeHtml(note.gloss)}</div>` : ""}
 
       <div id="tools-row">
         <button id="suspend">Suspend</button>
@@ -1250,12 +1275,46 @@ function renderPronunciationReview(note) {
         <button id="delete">Delete</button>
       </div>
     </div>
+    <div id="answer-bar" class="${scored ? `result-${result.bucket}` : ""}">
+      <div>
+        ${
+          scored
+            ? `<div class="result-title">${verdict.title}</div>
+               <div class="result-heard">Heard: <em>${escapeHtml(result.transcript)}</em></div>
+               <button id="continue-btn" class="btn-3d ${verdict.button}">Continue</button>`
+            : `${result?.error ? `<div class="speak-error">${escapeHtml(result.error)}</div>` : ""}
+               ${
+                 state.recording === "recording"
+                   ? `<button id="mic-btn" class="btn-3d recording">⏹ Tap to stop</button>`
+                   : state.recording === "scoring"
+                   ? `<button class="btn-3d blue" disabled>Checking…</button>`
+                   : `<button id="mic-btn" class="btn-3d blue">🎤 Tap to speak</button>`
+               }
+               ${state.recording === "idle" ? `<button class="skip-link" id="skip-speaking">Can't speak now</button>` : ""}`
+        }
+      </div>
+    </div>
   `;
+
+  document.getElementById("play-normal")?.addEventListener("click", (e) => playReference(note, 1, e.currentTarget));
+  document.getElementById("play-slow")?.addEventListener("click", (e) => playReference(note, 0.7, e.currentTarget));
+  // Play it once on arrival, as Duolingo does -- only the first time this card
+  // is shown, not on every re-render while recording or after scoring.
+  if (note.audioUrl && state.autoplayedNoteId !== note.id) {
+    state.autoplayedNoteId = note.id;
+    playReference(note, 1, document.getElementById("play-normal"));
+  }
 
   const micBtn = document.getElementById("mic-btn");
   if (micBtn && state.recording === "idle") micBtn.addEventListener("click", startRecording);
   if (micBtn && state.recording === "recording") micBtn.addEventListener("click", stopAndScore);
   document.getElementById("continue-btn")?.addEventListener("click", continueAfterScore);
+  // Not now: leave this card due (no rating, no schedule change) and move on; it
+  // comes back next session.
+  document.getElementById("skip-speaking")?.addEventListener("click", () => {
+    referenceAudio?.pause();
+    advance();
+  });
   document.getElementById("suspend").addEventListener("click", suspendCurrent);
   document.getElementById("bury").addEventListener("click", buryCurrent);
   document.getElementById("delete").addEventListener("click", deleteCurrent);
