@@ -557,6 +557,25 @@ export class PostgresStore implements Store {
     return { newTakenToday, reviewTakenToday };
   }
 
+  async getReviewTimesSince(userId: string, since: Date): Promise<Date[]> {
+    // One column, paged like getReviewsSince below and for the same reason (the
+    // 1000-row response cap would otherwise silently cut a long history short).
+    const times: Date[] = [];
+    for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("anki_reviews")
+        .select("reviewed_at")
+        .eq("user_id", userId)
+        .gte("reviewed_at", since.toISOString())
+        .order("reviewed_at", { ascending: true })
+        .range(from, from + PostgresStore.PAGE_SIZE - 1);
+      if (error) throw new Error(`getReviewTimesSince: ${error.message}`);
+      for (const row of data ?? []) times.push(new Date(row.reviewed_at as string));
+      if (!data || data.length < PostgresStore.PAGE_SIZE) break;
+    }
+    return times;
+  }
+
   async getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]> {
     // Paged via PAGE_SIZE, not one unbounded select — found live (2026-09-16),
     // migrating a real ~3,800-review collection into this table: an unbounded

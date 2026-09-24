@@ -106,8 +106,9 @@ const state = {
   // older than the endpoint, or offline with nothing cached -- the deck list then
   // falls back to one ungrouped list.
   me: null,
-  // Whether the other person's decks are unfolded on the deck list.
-  partnerOpen: false,
+  // Ids of the other people whose decks are unfolded on the deck list -- one
+  // flag per person, since every person who isn't you gets their own toggle.
+  openPeople: new Set(),
   // The deck session in progress, for the progress bar and the end-of-session
   // screen: { startedAt, answered, again }.
   session: null,
@@ -236,7 +237,7 @@ function personHtml(person, decks, dailyGoal) {
   const lang = person.learningLanguage;
   const learning = LANGUAGE_NAMES[lang] ? `learning ${LANGUAGE_FLAGS[lang]} ${LANGUAGE_NAMES[lang]}` : "";
   const goalPct = Math.min(100, Math.round((person.reviewedToday / dailyGoal) * 100));
-  const open = person.isYou || state.partnerOpen;
+  const open = person.isYou || state.openPeople.has(person.id);
   const streakDays = `${person.streak} day${person.streak === 1 ? "" : "s"}`;
   return `
     <section class="person ${person.isYou ? "you" : "partner"}">
@@ -260,7 +261,7 @@ function personHtml(person, decks, dailyGoal) {
           ? firstDue
             ? `<button class="btn-3d start-btn" data-deck="${escapeHtml(firstDue.deck)}">Start · ${escapeHtml(deckTopic(firstDue))}</button>`
             : `<div class="all-done">✓ All caught up for today</div>`
-          : `<button class="partner-toggle">${open ? "Hide" : "Show"} ${escapeHtml(person.name)}'s decks</button>`
+          : `<button class="partner-toggle" data-person="${escapeHtml(person.id)}">${open ? "Hide" : "Show"} ${escapeHtml(person.name)}'s decks</button>`
       }
       ${
         open
@@ -282,7 +283,9 @@ function renderDeckList() {
   titleEl.textContent = `Capybara — ${totalDue} due`;
 
   let body;
-  if (people.length > 0) {
+  // Grouped only when the server says which person is asking: without that there is
+  // no "your" group to lead with or start from, so the plain list is the safer view.
+  if (people.length > 0 && you) {
     const claimed = new Set();
     body = people.map((person) => {
       const decks = state.decks.filter((d) => deckLanguage(d) === person.learningLanguage);
@@ -309,9 +312,13 @@ function renderDeckList() {
   contentEl.querySelectorAll(".deck-row, .start-btn").forEach((el) => {
     el.addEventListener("click", () => enterDeck(el.dataset.deck));
   });
-  contentEl.querySelector(".partner-toggle")?.addEventListener("click", () => {
-    state.partnerOpen = !state.partnerOpen;
-    renderDeckList();
+  contentEl.querySelectorAll(".partner-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.person;
+      if (state.openPeople.has(id)) state.openPeople.delete(id);
+      else state.openPeople.add(id);
+      renderDeckList();
+    });
   });
 }
 
