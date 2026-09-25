@@ -13,7 +13,11 @@ remain. **2026-09-23 (§6.14):** `sync` v13 deployed from `main` through the new
 gated `.github/workflows/deploy.yml`, byte-verified — this is what shipped the
 Phase 4/5 work to the live app, plus decks split by language so each person's
 schedule stays their own; an English Pronunciation deck now has a writer.
-Written 2026-09-18, updated 2026-09-23 against the live database — every
+**2026-09-24 (§6.15):** English Pronunciation deck live (38 cards, `onyx` voice);
+capybara-bot adds up to 5 pronunciation words a day per person automatically;
+the deck list is grouped by person, with Duolingo-style streaks, goals and
+session screens; a code review's nine findings fixed. `sync` v15, bot build v110.
+Written 2026-09-18, updated 2026-09-24 against the live database — every
 number below was measured, not estimated. See the Appendix for how to
 re-measure any of them.**
 
@@ -67,12 +71,12 @@ recovery load (§6.11 has the before/after).
 
 | Piece | State |
 |---|---|
-| `sync` | v13, deployed 2026-09-23 by `deploy.yml` from `407e200`; all 14 files byte-verified against `main` (§6.14) |
+| `sync` | v15, deployed 2026-09-24 by `deploy.yml` from `4021acc` (v13 on 2026-09-23 was byte-verified against `main`, §6.14) |
 | `scan` | v6, byte-verified against `main` |
 | `pronounce` | v7 |
 | `app` | v5 — **dead**, `web/` moved to GitHub Pages; still deployed |
-| `web/` | GitHub Pages, serving current `main` |
-| `telegram-bot` | v126 (capybara-bot; `/study`, `/syncanki` and the daily auto-learn live) |
+| `web/` | GitHub Pages, serving current `main` (`d3b1993`, shell cache v9) |
+| `telegram-bot` | v130, build `v110` (capybara-bot; `/study`, `/syncanki`, the daily auto-learn and auto-pronounce live) |
 
 ### 1.2 In the database
 
@@ -960,6 +964,46 @@ type-check and tests as CI, deploys the committed files with the Supabase CLI
 compared against `main`: 14 identical, 0 different. The live schema already had
 every column this code reads (`learning_step`, `buried_on`, the leech and
 rollover settings) before the deploy, so nothing else had to change first.
+
+### 6.15 Pronunciation for both people, per-person decks, and a review pass, 2026-09-24
+
+Measured 2026-09-24 11:47 UTC: 1,398 notes (1,287 imported, 111 bot), 1,543
+card states, 4,818 reviews (52 in-app since the §6.13 baseline). Pronunciation:
+191 `uk` (imported), 38 `en` (new).
+
+**English pronunciation.** Vika's deck was built with capybara-bot's
+`scripts/anki_pronunciation --direct`. The first real preview showed that taking
+the top `vocabulary` example sentences as they came was unsafe: they are
+conversation lines, some private, and the audio goes to a public bucket. One was
+also mis-tagged, not English. So the script gained filters (#89): a word limit, a
+per-language alphabet check, and a reviewed flow (`--save-plan`, then `--skip`
+by number). 38 of 40 went in. English audio is OpenAI `onyx`, and the 38 were
+re-recorded in place (#91), with review history kept.
+
+**Automatic pronunciation cards (capybara-bot #90).** The daily auto-learn run
+now also adds up to 5 pronunciation cards per person, in their own language's
+deck. These are *words* from their own flashcards, never example sentences,
+because nobody reviews the automatic path before audio goes public. It uses the
+bot's own OpenAI key, with the same file naming as the script. The run's public
+Actions log now prints counts only.
+
+**Decks grouped by person (#43).** `GET /sync/me` returns each person's name,
+language, streak, and today's count, each on their own day boundary.
+`DeckSummary.language` tells the list which group a row belongs to. The viewer's
+decks lead; the other person's are folded by default, because studying them
+spends their schedule. The same review added a Duolingo-inspired layer: session
+progress bar, 3D buttons, answer banners, haptics, a session-complete screen, and
+a redesigned pronunciation card (#45). The rating colours stay AnkiDroid's.
+
+**Review pass.** A code review of the day's merges found nine latent issues. All
+are fixed and deployed (capybara-bot #93, capybara-anki #44). The ones that
+matter for the migration:
+- the daily pronunciation run now fails loudly on a read error instead of
+  showing a green "0 added";
+- the script's duplicate check pages past PostgREST's 1,000-row cap;
+- re-recording never overwrites audio it didn't make (another provider, custom
+  settings);
+- `/sync/me` reads only `reviewed_at`, not whole review rows.
 
 ---
 
