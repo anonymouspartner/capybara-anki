@@ -891,7 +891,24 @@ async function undoLast() {
   refreshStatsStrip().catch((e) => console.error("stats strip refresh failed", e));
 }
 
+/** True while a rating is on its way to the server. The rating buttons (and a
+ * pronunciation card's Continue) stay on screen until that POST returns, and each
+ * tap mints its own reviewId -- so without this a double tap, or a second tap on a
+ * slow cold start, recorded the same card twice. The reconciliation report found
+ * seven such pairs in the live table, the widest 1.5 s apart. */
+let ratingInFlight = false;
+
 async function submitRating(rating) {
+  if (ratingInFlight) return;
+  ratingInFlight = true;
+  try {
+    await submitRatingOnce(rating);
+  } finally {
+    ratingInFlight = false;
+  }
+}
+
+async function submitRatingOnce(rating) {
   const note = currentNote();
   const index = state.index;
   const reviewId = crypto.randomUUID();

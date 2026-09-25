@@ -17,7 +17,10 @@ schedule stays their own; an English Pronunciation deck now has a writer.
 capybara-bot adds up to 5 pronunciation words a day per person automatically;
 the deck list is grouped by person, with Duolingo-style streaks, goals and
 session screens; a code review's nine findings fixed. `sync` v15, bot build v110.
-Written 2026-09-18, updated 2026-09-24 against the live database — every
+**2026-09-25 (§6.16):** the reconciliation report for 6.3 is built; its first
+run found 13 cards whose schedule predates their newest review and 7 answers
+recorded twice by one tap — the double tap is fixed in the reviewer.
+Written 2026-09-18, updated 2026-09-25 against the live database — every
 number below was measured, not estimated. See the Appendix for how to
 re-measure any of them.**
 
@@ -393,7 +396,7 @@ asked for:
 |---|---|
 | 6.1 | **Freeze AnkiDroid.** Stop reviewing there. Do not uninstall. **Started 2026-09-22** — see §6.13 for the exact baseline this freeze starts from. |
 | 6.2 | Final export + merge — one last AnkiDroid export, whenever the freeze is confirmed to have held, run through `load_recovery.py` the same way §6.11 did. |
-| 6.3 | **One week app-only**, with a reconciliation report |
+| 6.3 | **One week app-only**, with a reconciliation report. **Report built 2026-09-25** — `migration/reconcile.py`, run from Actions → **reconcile** with the week's start date. See §6.16. |
 | 6.4 | Archive the final `.apkg` off-device |
 | 6.5 | Uninstall — and even then, keep the archive. |
 
@@ -1005,6 +1008,62 @@ matter for the migration:
   settings);
 - `/sync/me` reads only `reviewed_at`, not whole review rows.
 
+
+### 6.16 The reconciliation report, and what its first run found, 2026-09-25
+
+**What it checks.** `python -m migration.reconcile` (or Actions → **reconcile**)
+reads the live tables and the daily backup taken at the start of the window, and
+reports:
+
+| Check | FAILs when |
+|---|---|
+| `schedule-behind-log` | a card's `last_review` is older than its newest review |
+| `schedule-ahead-of-log` | a card has a `last_review` no review explains |
+| `reviews-without-schedule`, `orphan-reviews`, `future-reviews` | the log and the schedule don't line up at all |
+| `double-submits` | one person answered one card twice within 2 s (in-app reviews only) |
+| `freeze-held` | any AnkiDroid review is dated after §6.13's freeze |
+| `history-kept`, `history-unchanged` | a review from the baseline is gone (note still there) or changed |
+| `schedule-moves-only-with-reviews` | a schedule moved and `last_review` changed with no new review |
+| `export-*` (with `--export`) | 6.2's final export isn't fully loaded, or has reviews after the freeze |
+
+`own-decks-only` only warns: studying the other person's language moves their
+schedule, but it isn't corruption. A schedule that moved with no review but kept
+its `last_review` also only warns, because an undo leaves exactly that. A finding
+older than the window is a WARN rather than a FAIL, so rows already known don't
+fail every later run. The process exits 1 on any FAIL.
+
+Imported and in-app reviews are told apart by id: `transform.review_uuid` makes
+every imported id a uuid5, and the app mints uuid4s. Live today: 4,615 uuid5,
+all dated by 2026-09-17 20:04 UTC; 261 uuid4, all from 2026-09-16 on. The public
+Actions log shows counts only. People are labelled by the language they learn,
+and `--details` (row ids, never text) is for local runs.
+
+**First run, measured with the same queries against the live database.**
+- **13 cards whose schedule predates their newest review** (WARN, older than any
+  window). All 13 are recall cards Tim answered in AnkiDroid on 2026-09-17,
+  after the app already had a state row for them. `load_recovery.py` loads with
+  `ignore-duplicates`, so the review rows landed and the schedule didn't move. 4
+  of the 13 were last scheduled by an in-app review from the other account the
+  night before. Effect: their schedules ignore that one answer. Each card
+  still comes up, and the app schedules it from the older state.
+  **The same thing will happen to any card 6.2's final export brings a newer
+  review for,** so run the report after 6.2 and before the week starts.
+- **7 answers recorded twice** (09-17 ×4, 09-18 ×1, 09-24 ×2, widest gap 1.5 s).
+  Each tap on a rating button (or a pronunciation card's Continue) minted its own
+  `reviewId`. The buttons stay live until the POST returns, so a second tap on a
+  slow cold start was a second review. **Fixed:** `submitRating` now ignores taps
+  while one is in flight. Measured in the demo reviewer with every POST delayed
+  1.5 s: three taps sent 3 reviews before the fix and 1 after. Shell cache →
+  v10. The 7 extra rows are still in the table; each counts as an immediate
+  second answer in its card's FSRS history.
+- Everything else passes: no review without a schedule or a note, none dated in
+  the future, no AnkiDroid review after the freeze, and no cross-language review
+  since the 2026-09-23 split.
+
+**Not changed without a say-so:** the 13 stale schedules (a replay would
+re-derive them) and the 7 duplicate rows (deleting the later of each pair).
+Both are live-data writes.
+
 ---
 
 ## 7. What "done" looks like
@@ -1024,7 +1083,9 @@ Falsifiable, so this cannot be declared finished on vibes:
 4. `/export` produces an `.apkg` that imports into a clean Anki install with
    scheduling intact. **Data fidelity verified (§6.2) — the manual "open it in
    real Anki" step is the one piece of this still outstanding.**
-5. A week of app-only reviewing with no reconciliation drift.
+5. A week of app-only reviewing with no reconciliation drift. **Measurable
+   since 2026-09-25 (§6.16)** — `reconcile` ending in `RESULT: no drift`
+   for a window that starts the day after 6.2's load.
 6. Both people's stats reflect their own work.
 
 ---
