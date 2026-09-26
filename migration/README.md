@@ -183,3 +183,25 @@ One-time setup the workflow can't do for itself: add `SUPABASE_URL` and
 `SUPABASE_SERVICE_ROLE_KEY` as repo secrets (Settings → Secrets and variables
 → Actions) — a service-role key isn't something CI should provision for
 itself.
+
+## Reconciliation report — `reconcile.py`
+
+Phase 6.3 of `docs/MIGRATION.md`: during the app-only week, is anything drifting?
+It compares the schedule (`anki_card_state`) against the review log, compares the
+log against the backup taken at the start of the window (nothing lost or
+rewritten), catches an answer recorded twice, and confirms AnkiDroid stayed frozen.
+See `docs/MIGRATION.md` §6.16 for every check and what the first run found.
+
+```bash
+export SUPABASE_URL=https://<ref>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=<service role key>
+python -m migration.reconcile                        # the last 7 days
+python -m migration.reconcile --since 2026-09-26     # a given week
+python -m migration.reconcile --export scratch/final # also check 6.2's export is loaded
+```
+
+Or run it in Actions → **reconcile** → Run workflow, with the week's start date.
+It uses the same secrets as `backup.yml`. Read-only, stdlib-only, and it prints
+counts only: no words and no names, since the logs are public. `--details` adds
+row ids for chasing something down locally. Exits 1 when anything FAILs.
+

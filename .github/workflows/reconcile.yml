@@ -1,0 +1,48 @@
+name: reconcile
+
+# docs/MIGRATION.md Phase 6.3: the reconciliation report for the app-only week.
+# Checks that the schedule still agrees with the review log, that no history
+# changed since the window's first daily backup, that no answer was recorded
+# twice, and that AnkiDroid stayed frozen -- see migration/reconcile.py.
+#
+# Manual on purpose: the week starts when Phase 6.2's final export has been
+# loaded, which only a person knows. Run it with that date as `since` at the end
+# of the week (and any day in between); leave it blank for the last 7 days.
+#
+# Read-only. Same secrets as backup.yml (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).
+# This repo and its logs are public: the report prints counts only -- no word,
+# no name, no row id -- and this workflow never passes --details.
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Window start, YYYY-MM-DD (UTC). Blank = the last 7 days."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Reconciliation report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          if [ -n "$SINCE" ]; then
+            python -m migration.reconcile --since "$SINCE"
+          else
+            python -m migration.reconcile
+          fi
