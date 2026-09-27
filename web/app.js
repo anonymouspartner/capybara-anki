@@ -139,6 +139,65 @@ function escapeHtml(s) {
   }[c]));
 }
 
+/** An apostrophe between two Cyrillic letters, shown as the Ukrainian apostrophe
+ * (U+02BC) instead of the typewriter one. The text keeps whatever was typed --
+ * spelling cards compare against it -- but in the bold heading font a plain ' sits
+ * right against ї's two dots and reads as a third one (з'їсти). */
+function showText(s) {
+  return escapeHtml((s ?? "").replace(/(?<=[\u0400-\u04FF])'(?=[\u0400-\u04FF])/g, "\u02BC"));
+}
+
+const CYRILLIC = /[\u0400-\u04FF]/;
+const LATIN = /[A-Za-z]/;
+
+/** The meaning lines on a card's back, from its two meaning fields
+ * (lemmaTranslation, gloss). Their content was never consistent across sources:
+ * the same English twice (kind / kind), the word itself (вбивчий / вбивчий), or a
+ * Ukrainian explanation in one of them (доки: поки, до того часу як). So:
+ *   - drop a line that repeats the word, or that another line already contains;
+ *   - main: the first line in the learner's own language (English on a Ukrainian
+ *     card, Ukrainian on an English one);
+ *   - others: the rest in that language, shown small;
+ *   - explanation: lines in the language being learned, shown small underneath.
+ * A card with no own-language line at all shows its first line as the main one. */
+function meaningLines(note) {
+  const norm = (t) => t.trim().toLowerCase();
+  const lemma = norm(note.lemma ?? "");
+  let lines = [note.lemmaTranslation, note.gloss]
+    .map((t) => (t ?? "").trim())
+    .filter((t) => t && norm(t) !== lemma);
+  lines = lines.filter((t, i) => lines.findIndex((u) => norm(u) === norm(t)) === i);
+  const within = (part, whole) =>
+    norm(whole) !== norm(part) &&
+    new RegExp(`(^|[^\\p{L}])${norm(part).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}]|$)`, "u").test(norm(whole));
+  lines = lines.filter((t) => !lines.some((u) => within(t, u)));
+  const own = note.language === "en"
+    ? (t) => CYRILLIC.test(t)
+    : (t) => LATIN.test(t) && !CYRILLIC.test(t);
+  const native = lines.filter(own);
+  const explanation = lines.filter((t) => !own(t));
+  if (native.length === 0) return { main: explanation[0] ?? "", others: [], explanation: explanation.slice(1) };
+  return { main: native[0], others: native.slice(1), explanation };
+}
+
+const BOOK_TAG = `<div class="origin-tag">📖 Originated from book</div>`;
+
+/** The four rating buttons with their intervals. The previews are due times the
+ * server computed when the queue was fetched, so they're shown relative to that
+ * moment (`previewAt`), not to now: measured against now, a "10m" learning step
+ * counted down while the queue sat open and read "<1m" ten minutes into a session.
+ * The review itself is scheduled when it's submitted, so only the labels were off. */
+function ratingRowHtml(note) {
+  const from = note.previewAt ? new Date(note.previewAt) : new Date();
+  const p = note.preview;
+  return `<div id="rating-row">
+               <button class="rating-again" data-rating="1"><span class="interval">${formatInterval(p.again, from)}</span><span>Again</span></button>
+               <button class="rating-hard" data-rating="2"><span class="interval">${formatInterval(p.hard, from)}</span><span>Hard</span></button>
+               <button class="rating-good" data-rating="3"><span class="interval">${formatInterval(p.good, from)}</span><span>Good</span></button>
+               <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, from)}</span><span>Easy</span></button>
+             </div>`;
+}
+
 backBtn.addEventListener("click", showDeckList);
 addLink.addEventListener("click", showAddCardForm);
 settingsLink.addEventListener("click", showSettingsForm);
@@ -575,6 +634,8 @@ async function enterDeck(deck) {
   contentEl.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--fg-muted)">Loading…</div>`;
   try {
     state.queue = await api(`/sync/due?deck=${encodeURIComponent(deck)}`);
+    const fetchedAt = new Date().toISOString();
+    for (const card of state.queue) card.previewAt = fetchedAt;
   } catch (e) {
     contentEl.innerHTML = `<div id="error">Couldn't load this deck.</div>`;
     console.error(e);
@@ -726,15 +787,20 @@ function renderReview() {
   contentEl.innerHTML = `
     ${progressHtml()}
     <div id="card">
-      <div id="lemma">${escapeHtml(note.lemma)}</div>
+      ${note.fromBook ? BOOK_TAG : ""}
+      <div id="lemma">${showText(note.lemma)}</div>
       <div id="back" class="${state.revealed ? "visible" : ""}">
         <hr class="divider" />
-        <div class="translation">${escapeHtml(note.lemmaTranslation)}</div>
-        <div class="gloss">${escapeHtml(note.gloss)}</div>
-        <div class="pos">${[note.partOfSpeech, note.language].filter(Boolean).join(" · ")}</div>
+        ${(() => {
+          const m = meaningLines(note);
+          return `<div class="translation">${showText(m.main)}</div>
+        ${m.others.map((t) => `<div class="gloss">${showText(t)}</div>`).join("")}
+        ${m.explanation.map((t) => `<div class="explanation">${showText(t)}</div>`).join("")}`;
+        })()}
+        <div class="pos">${escapeHtml([note.partOfSpeech, note.language].filter(Boolean).join(" · "))}</div>
         <hr class="divider" />
-        ${note.example ? `<div class="example">${escapeHtml(note.example)}</div>` : ""}
-        ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
+        ${note.example ? `<div class="example">${showText(note.example)}</div>` : ""}
+        ${note.exampleTranslation ? `<div class="example-translation">${showText(note.exampleTranslation)}</div>` : ""}
       </div>
       <div id="tools-row">
         <button id="edit">Edit</button>
@@ -746,16 +812,7 @@ function renderReview() {
     <div id="answer-bar">
       ${
         state.revealed
-          ? (() => {
-              const now = new Date();
-              const p = note.preview;
-              return `<div id="rating-row">
-               <button class="rating-again" data-rating="1"><span class="interval">${formatInterval(p.again, now)}</span><span>Again</span></button>
-               <button class="rating-hard" data-rating="2"><span class="interval">${formatInterval(p.hard, now)}</span><span>Hard</span></button>
-               <button class="rating-good" data-rating="3"><span class="interval">${formatInterval(p.good, now)}</span><span>Good</span></button>
-               <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, now)}</span><span>Easy</span></button>
-             </div>`;
-            })()
+          ? ratingRowHtml(note)
           : `<button id="reveal-btn" class="btn-3d blue">Show answer</button>`
       }
     </div>
@@ -1024,8 +1081,9 @@ function renderSpellingReview(note) {
   contentEl.innerHTML = `
     ${progressHtml()}
     <div id="card">
+      ${note.fromBook ? BOOK_TAG : ""}
       <div class="card-kind-badge">Spell the word for</div>
-      <div id="lemma">${escapeHtml(note.lemmaTranslation ?? "")}</div>
+      <div id="lemma">${showText(meaningLines(note).main)}</div>
       ${pos ? `<div class="pos">${escapeHtml(pos)}</div>` : ""}
       ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
       ${!state.revealed ? `<div id="spelling-dots">${escapeHtml(dots)}</div>` : ""}
@@ -1038,8 +1096,8 @@ function renderSpellingReview(note) {
                  ${spellingIsCorrect(answer, note.lemma) ? "✓ Correct!" : "✗ Not quite"}
                  ${answer ? `<div class="sub">You typed: ${escapeHtml(answer)}</div>` : ""}
                </div>
-               <div id="spelling-answer">${escapeHtml(note.lemma)}</div>
-               ${note.example ? `<div class="example">${escapeHtml(note.example)}</div>` : ""}
+               <div id="spelling-answer">${showText(note.lemma)}</div>
+               ${note.example ? `<div class="example">${showText(note.example)}</div>` : ""}
                ${note.exampleTranslation ? `<div class="example-translation">${escapeHtml(note.exampleTranslation)}</div>` : ""}
              </div>`
           : `<input id="spelling-input" type="text" autocomplete="off" autocapitalize="off"
@@ -1057,16 +1115,7 @@ function renderSpellingReview(note) {
     <div id="answer-bar">
       ${
         state.revealed
-          ? (() => {
-              const now = new Date();
-              const p = note.preview;
-              return `<div id="rating-row">
-               <button class="rating-again" data-rating="1"><span class="interval">${formatInterval(p.again, now)}</span><span>Again</span></button>
-               <button class="rating-hard" data-rating="2"><span class="interval">${formatInterval(p.hard, now)}</span><span>Hard</span></button>
-               <button class="rating-good" data-rating="3"><span class="interval">${formatInterval(p.good, now)}</span><span>Good</span></button>
-               <button class="rating-easy" data-rating="4"><span class="interval">${formatInterval(p.easy, now)}</span><span>Easy</span></button>
-             </div>`;
-            })()
+          ? ratingRowHtml(note)
           : `<button id="reveal-btn" class="btn-3d">Check</button>`
       }
     </div>
@@ -1282,7 +1331,7 @@ function renderPronunciationReview(note) {
              </div>`
           : ""
       }
-      <div class="bubble">${escapeHtml(note.lemma)}</div>
+      <div class="bubble">${showText(note.lemma)}</div>
       ${note.lemmaTranslation ? `<div class="speak-translation">${escapeHtml(note.lemmaTranslation)}</div>` : ""}
       ${note.gloss && note.gloss !== note.lemmaTranslation ? `<div class="keyword">${escapeHtml(note.gloss)}</div>` : ""}
 

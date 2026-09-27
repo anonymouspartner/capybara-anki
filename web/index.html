@@ -192,7 +192,23 @@
   hr.divider { width: 100%; border: none; border-top: 1px solid var(--border); margin: 4px 0; }
   .translation { font-size: 22px; }
   .gloss { color: var(--fg-muted); }
+  /* A meaning written in the language being learned (a Ukrainian explanation on a
+     Ukrainian card) -- secondary to the translation above it. */
+  .explanation { color: var(--fg-muted); font-size: 15px; margin-top: 2px; }
   .pos { font-size: 13px; color: var(--fg-muted); font-style: italic; }
+  /* Cards whose word came from the book being read, not from a conversation. */
+  .origin-tag {
+    display: block;
+    width: fit-content;
+    align-self: center;
+    margin: 0 auto 10px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--duo-blue, #1cb0f6);
+    border: 1px solid currentColor;
+  }
   .example { margin-top: 14px; }
   .example-translation { color: var(--fg-muted); font-size: 15px; }
 

@@ -51,6 +51,22 @@ class TestTransformNote:
         # audio is never in the export (media excluded) — see transform.py docstring
         assert note.audio_url is None
 
+    def test_html_entities_are_decoded(self):
+        """The real collection's fields came through capybara-bot's CSV export, which
+        escaped them: an apostrophe is `&#x27;`, a quote `&quot;`. Stored as-is they
+        showed on the card literally (MIGRATION.md §6.17)."""
+        raw = _raw_note(fields=["зв&#x27;язатися", "get in touch", "verb", "uk",
+                                "вони зв&#x27;язалися", "they didn&#x27;t &quot;call&quot;", "contact"])
+        note, _ = transform_note(raw, _capybara_note_type())
+        assert note.lemma == "зв'язатися"
+        assert note.example == "вони зв'язалися"
+        assert note.example_translation == 'they didn\'t "call"'
+
+    def test_empty_fields_stay_none_after_decoding(self):
+        raw = _raw_note(fields=["слово", "", "", "uk", "", "", ""])
+        note, _ = transform_note(raw, _capybara_note_type())
+        assert note.gloss is None and note.example is None and note.lemma_translation is None
+
     def test_ids_are_deterministic_across_runs(self):
         """§7.2 / D15: migration is re-run at least twice, so re-running on the same
         export must produce the same note id, not a fresh random one each time."""
