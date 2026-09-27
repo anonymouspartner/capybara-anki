@@ -20,6 +20,7 @@ Two things worth knowing before touching this file:
 
 from __future__ import annotations
 
+import html
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -119,6 +120,17 @@ def resolve_vocab_deck(
     return deck or "Ukrainian", len(cards) == 2
 
 
+def _text(value: str | None) -> str | None:
+    """A field's plain text. Anki stores fields as HTML, and the collection's
+    notes came in through capybara-bot's CSV export, which escaped them: an
+    apostrophe arrives as `&#x27;` and a double quote as `&quot;`. AnkiDroid
+    renders the entity; this app shows text as text, so an undecoded field reads
+    `зв&#x27;язатися` on the card (docs/MIGRATION.md §6.17). Empty stays None."""
+    if not value:
+        return None
+    return html.unescape(value)
+
+
 def transform_note(
     raw: RawNote, note_type: NoteType | None
 ) -> tuple[Note | None, str | None]:
@@ -145,13 +157,13 @@ def transform_note(
         Note(
             id=note_uuid(raw.guid),
             anki_guid=raw.guid,
-            lemma=values["lemma"],
-            gloss=values["gloss"] or None,
-            lemma_translation=values["lemma_translation"] or None,
-            part_of_speech=values["part_of_speech"] or None,
+            lemma=html.unescape(values["lemma"]),
+            gloss=_text(values["gloss"]),
+            lemma_translation=_text(values["lemma_translation"]),
+            part_of_speech=_text(values["part_of_speech"]),
             language=values["language"],
-            example=values["example"] or None,
-            example_translation=values["example_translation"] or None,
+            example=_text(values["example"]),
+            example_translation=_text(values["example_translation"]),
             # Not in the export at all — media was deliberately excluded (README
             # step-zero instructions) and reference audio for the Capybara decks
             # comes from scripts/anki_pronunciation (ElevenLabs), not from Anki.
@@ -215,9 +227,9 @@ def transform_pronunciation_note(
         Note(
             id=note_uuid(raw.guid),
             anki_guid=raw.guid,
-            lemma=values["TargetText"],
-            gloss=values["Hint"] or None,
-            lemma_translation=values["Translation"] or None,
+            lemma=html.unescape(values["TargetText"]),
+            gloss=_text(values["Hint"]),
+            lemma_translation=_text(values["Translation"]),
             part_of_speech=None,
             language=language,
             example=None,

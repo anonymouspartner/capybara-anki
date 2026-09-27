@@ -81,6 +81,9 @@ function noteFromRow(row: Record<string, unknown>): NoteRow {
     deck: row.deck as string,
     kind: row.kind as NoteRow["kind"],
     hasSpelling: row.has_spelling as boolean,
+    // `from_book` is absent until its migration is applied; a scanned page is
+    // from the book by definition, flagged or not.
+    fromBook: row.from_book === true || row.source === "scan",
   };
 }
 

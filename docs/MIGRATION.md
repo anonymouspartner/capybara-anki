@@ -1064,6 +1064,47 @@ and `--details` (row ids, never text) is for local runs.
 re-derive them) and the 7 duplicate rows (deleting the later of each pair).
 Both are live-data writes.
 
+
+### 6.17 Card display fixes, and words from the book, 2026-09-27
+
+Screenshots from a real session showed five problems. Each was measured against the live
+database:
+
+- **`&#x27;` shown instead of an apostrophe.** 386 of the 1,287 imported notes hold
+  `&#x27;` (808×) or `&quot;` (80×), and those are the only two codes. The collection's
+  notes came through capybara-bot's CSV export, which HTML-escaped them. AnkiDroid rendered
+  fields as HTML; this app shows text as text. **Importer fixed:** `transform._text`
+  decodes every field, so 6.2's final export can't bring them back. **Live rows:** a
+  one-off decode, which needs a say-so.
+- **Four words twice.** зв'язатися, люб'язний, пам'ятати and під'їзд each exist once
+  imported and once bot-made. capybara-bot's `writeAnkiNotes` pre-check skipped
+  `anki-import` rows (`.neq('source','anki-import')`), so /learn re-added words the
+  imported deck already had. **Fixed in capybara-bot (v112):** the check now covers
+  every row. The 4 bot copies are to be deleted; the imported ones keep their history.
+- **Hard/Good reading "<1m" on new cards.** Interval previews are due times the server
+  computes when the queue is fetched. The reviewer measured them against render time, so
+  a 10-minute step counted down while the queue sat open. Only the labels were wrong:
+  each review is scheduled when it's submitted. **Fixed:** previews are shown relative to
+  the fetch (`previewAt`).
+- **Meaning shown twice, or in Ukrainian.** 499 imported notes have the same English in
+  both meaning fields. Some book-era notes hold a Ukrainian explanation in
+  `lemma_translation`, and 6 repeat the lemma itself. **Fixed in display**
+  (`meaningLines`): the learner's own language leads, a Ukrainian explanation sits small
+  underneath, and repeats and contained duplicates are dropped. The spelling card's
+  prompt uses the same main line, so вбивчий no longer shows its own answer as the clue.
+- **з'їсти.** The stored text is fine (a plain `'`). In the bold heading font it sits
+  against ї's dots and reads as a third dot. Display now uses U+02BC (ʼ) between
+  Cyrillic letters; the stored text is unchanged.
+
+**Words from the book.** A new column `anki_notes.from_book` (migration
+`20260927120000`). The reviewer shows "📖 Originated from book" on those cards and on
+every page-scanner note (`source = 'scan'`; none exist yet). The imported deck has no
+provenance field. The candidates are imported notes whose example sentence never
+appears in the couple's messages. That's 95 notes, but 63 are Grammar-deck blanks and 11
+are English-deck notes, so only the Ukrainian deck counts: 21 notes, 20 words. The
+maintainer confirms the list before anything is flagged; no word list is committed here,
+since this repo is public.
+
 ---
 
 ## 7. What "done" looks like

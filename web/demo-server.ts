@@ -73,11 +73,13 @@ const demoNotes: NoteRow[] = [
     audioUrl: null, kind: "vocab", hasSpelling: false,
   },
   {
-    id: "demo-2", lemma: "капібара", gloss: "capybara", lemmaTranslation: "capybara",
+    // Shaped like a book card from the AnkiDroid import: a Ukrainian explanation
+    // in one meaning field, the English in the other, and the book label.
+    id: "demo-2", lemma: "капібара", gloss: "capybara", lemmaTranslation: "найбільший у світі гризун",
     partOfSpeech: "noun", language: "uk", deck: "Ukrainian",
     example: "Капібара — найбільший гризун у світі.",
     exampleTranslation: "The capybara is the world's largest rodent.",
-    audioUrl: null, kind: "vocab", hasSpelling: false,
+    audioUrl: null, kind: "vocab", hasSpelling: false, fromBook: true,
   },
   {
     id: "demo-3", lemma: "again", gloss: "one more time", lemmaTranslation: "знову",

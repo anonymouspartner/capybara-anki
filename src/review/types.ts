@@ -177,6 +177,11 @@ export interface NoteRow {
   deck: string;
   kind: NoteKind;
   hasSpelling: boolean;
+  /** The word came from the book being read rather than from a conversation: every
+   * page-scanner note (`source = 'scan'`), plus the imported notes flagged in
+   * `anki_notes.from_book` (docs/MIGRATION.md §6.17). The reviewer labels these.
+   * Optional so a store or fixture that predates it reads as "not from the book". */
+  fromBook?: boolean;
 }
 
 /** A note not yet in `notes` — what `/scan` (step 5, docs/DESIGN.md §4.1) and the
