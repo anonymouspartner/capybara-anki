@@ -20,7 +20,10 @@ session screens; a code review's nine findings fixed. `sync` v15, bot build v110
 **2026-09-25 (§6.16):** the reconciliation report for 6.3 is built; its first
 run found 13 cards whose schedule predates their newest review and 7 answers
 recorded twice by one tap — the double tap is fixed in the reviewer.
-Written 2026-09-18, updated 2026-09-25 against the live database — every
+**2026-09-27 (§6.16–6.17):** both cleaned up. Card display fixed (`&#x27;`, stale
+intervals, duplicate meanings); 21 cards labelled as from the book; 7 bot duplicates
+removed and capybara-bot stops making them. The reconciliation checks read zero.
+Written 2026-09-18, updated 2026-09-27 against the live database — every
 number below was measured, not estimated. See the Appendix for how to
 re-measure any of them.**
 
@@ -1060,9 +1063,23 @@ and `--details` (row ids, never text) is for local runs.
   the future, no AnkiDroid review after the freeze, and no cross-language review
   since the 2026-09-23 split.
 
-**Not changed without a say-so:** the 13 stale schedules (a replay would
-re-derive them) and the 7 duplicate rows (deleting the later of each pair).
-Both are live-data writes.
+**Cleaned up 2026-09-27, on the maintainer's say-so** (one guarded transaction, each
+step aborting unless it touched exactly the expected rows; see §6.17):
+- **7 duplicate reviews deleted.** The later review of each pair, in-app (uuid4) only.
+- **13 stale schedules repaired.** Each card's missed AnkiDroid answer(s) were
+  applied on top of its existing state with the app's own `applyReview` and card
+  seed. The state wasn't rebuilt from scratch, so the AnkiDroid-computed memory
+  state it started from is kept. The overdue ones moved out to Oct–Nov 2026.
+- **The 6 double-tapped cards rebuilt** from their remaining history with
+  `replayCardState`, the same thing Undo does. Their inflated intervals came back
+  down; one spelling card that had been scheduled as if new went up to match its
+  imported history.
+- Each state update was guarded on the card's current `last_review`, so a card
+  answered in the meantime would have aborted the whole transaction rather than
+  been overwritten.
+
+Re-measured afterwards: schedule behind or ahead of the log 0, double submits 0,
+reviews without a schedule 0, orphan reviews 0.
 
 
 ### 6.17 Card display fixes, and words from the book, 2026-09-27
@@ -1101,9 +1118,21 @@ database:
 every page-scanner note (`source = 'scan'`; none exist yet). The imported deck has no
 provenance field. The candidates are imported notes whose example sentence never
 appears in the couple's messages. That's 95 notes, but 63 are Grammar-deck blanks and 11
-are English-deck notes, so only the Ukrainian deck counts: 21 notes, 20 words. The
-maintainer confirms the list before anything is flagged; no word list is committed here,
-since this repo is public.
+are English-deck notes, so only the Ukrainian deck counts: 21 notes, 19 words (two have
+twin notes). No word list is committed here, since this repo is public.
+
+**Applied 2026-09-27,** after the maintainer confirmed all 19 words. It ran as one
+guarded transaction, each step aborting unless it touched exactly the expected rows:
+- Migration `20260927120000` applied.
+- 21 notes flagged `from_book`.
+- The entities decoded in all 386 imported notes.
+- The 4 bot copies deleted, their imported twins kept. Grammar and the other decks
+  had 3 more bot copies with the same key, made before capybara-bot v112; those were
+  deleted in the same cleanup as §6.16's rows.
+
+Re-measured afterwards: 0 entities anywhere, 0 bot notes duplicating an imported
+note, 0 orphan reviews. `sync` redeployed from `f7ba2cd`, capybara-bot v112 live, web
+shell v11.
 
 ---
 
