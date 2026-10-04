@@ -446,12 +446,12 @@ Deno.test("getDeckSummaries: one row per deck, counts matching what getDueQueue 
   assertEquals(byDeck["English"].newCount, 1);
 });
 
-Deno.test("getDeckSummaries: a deck's daily new limit is shared with every other deck (§4.3)", async () => {
+Deno.test("getDeckSummaries: each deck has its own daily new limit (§6.18)", async () => {
   const store = new InMemoryStore();
   seedNote(store, "uk-1", { deck: "Ukrainian" });
   seedNote(store, "en-1", { deck: "English" });
   seedConfig(store, "tim", { dailyNewLimit: 1 });
-  // Spend the collection's one-and-only new-card allowance in Ukrainian.
+  // Spend Ukrainian's one new-card allowance.
   await submitReview(store, {
     reviewId: "r1",
     noteId: "uk-1",
@@ -465,10 +465,10 @@ Deno.test("getDeckSummaries: a deck's daily new limit is shared with every other
   const byDeck = Object.fromEntries(summaries.map((s) => [s.deck, s]));
 
   assertEquals(byDeck["Ukrainian"].newCount, 0); // allowance used, and it's due tomorrow anyway
-  // English's new card is held back too — matching Anki's own per-collection
-  // default (§4.3), not the earlier per-deck design where each deck got its
-  // own independent allowance against the same configured number.
-  assertEquals(byDeck["English"].newCount, 0);
+  // English keeps its own. Under the shared allowance (§4.3) it read 0 too,
+  // and whichever deck was opened first starved every other one, every day
+  // (docs/MIGRATION.md §6.18).
+  assertEquals(byDeck["English"].newCount, 1);
 });
 
 Deno.test("getDueQueueWithPreviews: attaches note content and a four-rating preview to each due card", async () => {
@@ -578,7 +578,7 @@ Deno.test("a 1am review counts toward the previous study day, so it doesn't eat 
     reviewedAt: lateNight,
   }).then(async () => {
     const counts = await store.getDailyCounts("tim", nextMidday);
-    assertEquals(counts, { newTakenToday: 0, reviewTakenToday: 0 });
+    assertEquals(counts, { newTakenByDeck: {}, reviewTakenToday: 0 });
 
     // ...so today's single new-card slot is still unspent and n2 is offered.
     // n1 is in the queue too, but as an overdue learning card (answered onto a
@@ -609,7 +609,7 @@ Deno.test("an 8pm review counts toward today even though it is already tomorrow 
     reviewedAt: evening,
   }).then(async () => {
     const counts = await store.getDailyCounts("tim", laterThatEvening);
-    assertEquals(counts.newTakenToday, 1);
+    assertEquals(counts.newTakenByDeck, { Ukrainian: 1 });
 
     // The limit of 1 is spent, so the second note is held back until tomorrow.
     const queue = await getDueQueue(store, "tim", laterThatEvening);
@@ -1014,11 +1014,12 @@ Deno.test("deck summaries agree with what pressing into the deck offers", async 
   assertEquals(summaries.find((s) => s.deck === "Ukrainian")?.newCount, 2);
 });
 
-Deno.test("a spelling answer counts against the whole collection's daily limit, not just Spelling's (§4.3)", async () => {
+Deno.test("a spelling answer counts against its Spelling deck's new limit, not the recall deck's (§6.18)", async () => {
   const store = new InMemoryStore();
   seedConfig(store, "u1", { dailyNewLimit: 1, dailyReviewLimit: 50 });
   seedNote(store, "a", { deck: "Ukrainian", hasSpelling: true });
   seedNote(store, "b", { deck: "Ukrainian", hasSpelling: false });
+  seedNote(store, "c", { deck: "Ukrainian", hasSpelling: true });
 
   await submitReview(store, {
     reviewId: "r1",
@@ -1029,13 +1030,16 @@ Deno.test("a spelling answer counts against the whole collection's daily limit, 
     reviewedAt: NOW,
   });
 
-  // The collection's one-new-card allowance is spent — by an answer in
-  // Spelling — so it counts against every deck, not just the one it happened
-  // in: getDailyCounts takes no deck argument at all.
-  assertEquals((await store.getDailyCounts("u1", NOW)).newTakenToday, 1);
-  // Ukrainian's own new card (b) is held back by that shared budget too.
+  // The new card was a spelling card, so it is charged to the deck that card
+  // is in — Ukrainian Spelling — and nowhere else.
+  assertEquals((await store.getDailyCounts("u1", NOW)).newTakenByDeck, { "Ukrainian Spelling": 1 });
+  // Ukrainian's own new card (b) still has Ukrainian's allowance to draw on.
   const ukrainianQueue = await getDueQueue(store, "u1", NOW, "Ukrainian");
-  assertEquals(noteIds(ukrainianQueue).includes("b"), false);
+  assertEquals(noteIds(ukrainianQueue).includes("b"), true);
+  // Spelling's allowance is spent: c's new spelling card is held back (a's is
+  // back as a learning card, which no new-card limit touches).
+  const spellingQueue = await getDueQueue(store, "u1", NOW, "Ukrainian Spelling");
+  assertEquals(spellingQueue.some((i) => i.noteId === "c"), false);
 });
 
 Deno.test("getDeckSummaries: each row carries the language whose learner it belongs to", async () => {

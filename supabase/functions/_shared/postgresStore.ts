@@ -59,12 +59,13 @@ import type {
 } from "../../../src/review/types.ts";
 import type { SettingsPatch } from "../../../src/review/mutations.ts";
 
-/** The three columns getDailyCounts needs out of a review; named because the
+/** The four columns getDailyCounts needs out of a review; named because the
  * recent-window memo stores a list of them. */
 interface RecentReview {
   note_id: string;
   card_kind: string;
   reviewed_at: string;
+  user_id: string;
 }
 
 function noteFromRow(row: Record<string, unknown>): NoteRow {
@@ -184,11 +185,10 @@ export class PostgresStore implements Store {
    * What they save is real. `getDeckSummaries` fans out over the deck list via
    * `getDueCandidates`, and every branch of that fan-out independently re-read
    * the user's scheduler config — one redundant round trip per deck, of an
-   * identical row. `getDailyCounts` used to fan out the same way before §4.3
-   * made daily limits per-collection rather than per-deck; it's called once
-   * per request now, so `recentReviewsMemo`/`startedEarlierMemo` no longer
-   * save a repeat call within a request the way `configMemo` still does — kept
-   * anyway, since a memo with nothing to deduplicate costs nothing.
+   * identical row. `getDailyCounts` is called once per request and returns
+   * every deck's counts at once, so `recentReviewsMemo`/`startedEarlierMemo`
+   * rarely save a repeat call within a request the way `configMemo` does —
+   * kept anyway, since a memo with nothing to deduplicate costs nothing.
    */
   private readonly configMemo = new Map<string, Promise<SchedulerConfigRow>>();
   private readonly recentReviewsMemo = new Map<string, Promise<RecentReview[]>>();
@@ -453,26 +453,28 @@ export class PostgresStore implements Store {
           state: state?.state ?? null,
           suspended: state?.suspended ?? false,
           buried: state?.buried_on === today,
+          deck: deckOfCard(note.deck as string, kind, note.language as "uk" | "en"),
         });
       }
     }
     return candidates;
   }
 
-  /** The user's reviews inside a recent window, paged and memoized. Kept as its
-   * own method (rather than inlined into `getDailyCounts`) mostly for
-   * readability now — before §4.3, this was what let the per-deck fan-out
-   * share one read of the window instead of one per deck. */
-  private recentReviews(userId: string, windowStart: Date): Promise<RecentReview[]> {
-    return this.memo(this.recentReviewsMemo, `${userId}|${windowStart.toISOString()}`, async () => {
+  /** Everyone's reviews inside a recent window, paged and memoized. Both
+   * people's, not just the caller's: whether a card was new when someone
+   * answered it depends on whether *anyone* had answered it before (cards are
+   * shared, D22), and the other person may have been the first, inside the
+   * window as easily as before it. */
+  private recentReviews(windowStart: Date): Promise<RecentReview[]> {
+    return this.memo(this.recentReviewsMemo, windowStart.toISOString(), async () => {
       const recent: RecentReview[] = [];
       for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
         const { data, error } = await this.client
           .from("anki_reviews")
-          .select("note_id, card_kind, reviewed_at")
-          .eq("user_id", userId)
+          .select("note_id, card_kind, reviewed_at, user_id")
           .gte("reviewed_at", windowStart.toISOString())
           .order("reviewed_at", { ascending: true })
+          .order("id", { ascending: true })
           .range(from, from + PostgresStore.PAGE_SIZE - 1);
         if (error) throw new Error(`getDailyCounts: ${error.message}`);
         recent.push(...(data ?? []));
@@ -483,27 +485,26 @@ export class PostgresStore implements Store {
   }
 
   /**
-   * How many new cards and how many reviews this user has already taken today,
-   * across the whole collection — one shared budget, not one per deck (§4.3,
-   * resolved 2026-09-18: matches Anki's own per-collection default). A card's
-   * deck plays no part in this count; `dueQueue.ts`'s `categorize` applies the
-   * same collection-wide remaining-slots number no matter which deck someone
-   * is looking at, same as `getDeckSummaries` (handlers.ts) shares one
-   * `getDailyCounts` call across every deck's row instead of asking once per
-   * deck.
+   * How many new cards (per deck) and how many reviews (in total) this user
+   * has already taken today. Each deck has its own new-card allowance, so new
+   * cards are counted by the deck their card is in (`deckOfCard`) — the shared
+   * allowance this replaced let the deck opened first spend all of it, every
+   * day (docs/MIGRATION.md §6.18). Reviews stay one shared count.
    *
    * Reads a bounded recent window, not the whole history. It used to page every
    * review the user had ever done — 3,804 rows on this account. Measured at
    * 3-4 seconds, which the reviewer then blocked on after every rating
    * (issue #16).
    *
-   * The counting rule is unchanged, and still matches InMemoryStore exactly: a
-   * review counts as "new" iff it is the FIRST review anki_reviews has ever
-   * recorded for its (note_id, card_kind). What changed is how that is
-   * established. Walking the window in order reproduces it for anything that
-   * started inside the window; for anything older, one targeted lookup asks
-   * whether the card has any review before the window at all, and seeds the
-   * seen-set with the answer.
+   * A review counts as "new" iff it is the FIRST review anki_reviews has ever
+   * recorded for its (note_id, card_kind), by anyone — the same thing
+   * InMemoryStore's state-at-submission rule says, since card state is shared.
+   * It used to ask "first by this user", which counted every imported card one
+   * person had studied in AnkiDroid as new the first time the other answered
+   * it (19 of one day's 59 "new" cards, 2026-10-04). Walking the window in
+   * order settles it for anything that started inside the window; for
+   * anything older, one targeted lookup asks whether the card has any review
+   * before the window at all, and seeds the seen-set with the answer.
    */
   async getDailyCounts(userId: string, now: Date): Promise<DailyCounts> {
     // Study days, not UTC days (day.ts). Comparing day keys rather than an
@@ -515,31 +516,37 @@ export class PostgresStore implements Store {
     const today = ankiDayKey(now, boundary);
     const windowStart = new Date(now.getTime() - PostgresStore.RECENT_WINDOW_MS);
 
-    const recent = await this.recentReviews(userId, windowStart);
+    const recent = await this.recentReviews(windowStart);
     // The common case, and the one that used to cost the most: nothing studied
     // recently, so there is nothing else to ask about.
-    if (recent.length === 0) return { newTakenToday: 0, reviewTakenToday: 0 };
+    if (!recent.some((r) => r.user_id === userId)) return { newTakenByDeck: {}, reviewTakenToday: 0 };
 
     const noteIds = [...new Set(recent.map((r) => r.note_id))];
 
     // Which of these cards were already being studied before the window opened.
     // Only their existence matters, so this asks about the touched notes alone
-    // rather than reading history wholesale.
+    // rather than reading history wholesale. Paged: a hundred long-studied
+    // cards can easily hold more than PostgREST's 1000-row cap of history, and
+    // a truncated answer here would quietly turn old cards into "new" ones.
     const startedEarlier = await this.memo(
       this.startedEarlierMemo,
-      `${userId}|${windowStart.toISOString()}`,
+      windowStart.toISOString(),
       async () => {
         const found = new Set<string>();
         for (const ids of PostgresStore.chunked(noteIds)) {
-          const { data, error } = await this.client
-            .from("anki_reviews")
-            .select("note_id, card_kind")
-            .eq("user_id", userId)
-            .in("note_id", ids)
-            .lt("reviewed_at", windowStart.toISOString());
-          if (error) throw new Error(`getDailyCounts: ${error.message}`);
-          for (const row of data ?? []) {
-            found.add(cardKey(row.note_id as string, row.card_kind as CardKind));
+          for (let from = 0; ; from += PostgresStore.PAGE_SIZE) {
+            const { data, error } = await this.client
+              .from("anki_reviews")
+              .select("note_id, card_kind")
+              .in("note_id", ids)
+              .lt("reviewed_at", windowStart.toISOString())
+              .order("id", { ascending: true })
+              .range(from, from + PostgresStore.PAGE_SIZE - 1);
+            if (error) throw new Error(`getDailyCounts: ${error.message}`);
+            for (const row of data ?? []) {
+              found.add(cardKey(row.note_id as string, row.card_kind as CardKind));
+            }
+            if (!data || data.length < PostgresStore.PAGE_SIZE) break;
           }
         }
         return found;
@@ -547,17 +554,35 @@ export class PostgresStore implements Store {
     );
 
     const seen = new Set(startedEarlier);
-    let newTakenToday = 0;
+    const newToday: RecentReview[] = [];
     let reviewTakenToday = 0;
     for (const row of recent) {
-      const key = cardKey(row.note_id as string, row.card_kind as CardKind);
+      const key = cardKey(row.note_id, row.card_kind as CardKind);
       const isFirstEver = !seen.has(key);
       seen.add(key);
-      if (ankiDayKey(new Date(row.reviewed_at as string), boundary) !== today) continue;
-      if (isFirstEver) newTakenToday++;
+      if (row.user_id !== userId) continue;
+      if (ankiDayKey(new Date(row.reviewed_at), boundary) !== today) continue;
+      if (isFirstEver) newToday.push(row);
       else reviewTakenToday++;
     }
-    return { newTakenToday, reviewTakenToday };
+
+    // Which deck each new card was in — only these notes, usually a few dozen.
+    const noteDeck = new Map<string, string>();
+    for (const ids of PostgresStore.chunked([...new Set(newToday.map((r) => r.note_id))])) {
+      const { data, error } = await this.client.from("anki_notes").select("id, deck, language").in("id", ids);
+      if (error) throw new Error(`getDailyCounts: ${error.message}`);
+      for (const row of data ?? []) noteDeck.set(row.id as string, `${row.deck}|${row.language}`);
+    }
+    const newTakenByDeck: Record<string, number> = {};
+    for (const row of newToday) {
+      const found = noteDeck.get(row.note_id);
+      // A note deleted since it was answered no longer has a deck to charge.
+      if (!found) continue;
+      const [noteDeckName, language] = found.split("|");
+      const deck = deckOfCard(noteDeckName, row.card_kind as CardKind, language as "uk" | "en");
+      newTakenByDeck[deck] = (newTakenByDeck[deck] ?? 0) + 1;
+    }
+    return { newTakenByDeck, reviewTakenToday };
   }
 
   async getReviewTimesSince(userId: string, since: Date): Promise<Date[]> {
