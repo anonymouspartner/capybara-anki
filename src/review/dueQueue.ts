@@ -14,7 +14,8 @@
  *   2. Review cards due now (state 2), oldest-due-first — the most overdue card is
  *      the one most at risk of being forgotten — with new cards (no card_state row,
  *      or a row with `state` null) *interspersed evenly among them*, up to whatever
- *      of the day's `dailyNewLimit` isn't already used. That interleaving is Anki's
+ *      of the day's `dailyNewLimit` isn't already used — per deck, so each deck's
+ *      new cards are limited by what *that* deck has introduced today. That interleaving is Anki's
  *      default (`new_mix: MixWithReviews`), and the reason this file stopped simply
  *      appending new cards last: with a real backlog, "last" means a new word is
  *      only ever reached on a day the whole review queue gets cleared.
@@ -76,13 +77,22 @@ function categorize(
     .sort(byDueAscending);
   const remainingReviewSlots = Math.max(limits.dailyReviewLimit - counts.reviewTakenToday, 0);
 
-  const remainingNewSlots = Math.max(limits.dailyNewLimit - counts.newTakenToday, 0);
-  const newCards = eligible.filter((c) => c.state === null || c.state === 0);
+  // Per deck: a deck's new cards draw on its own allowance only. With one
+  // shared allowance the deck opened first spent all of it every day, and the
+  // rest showed 0 new forever (docs/MIGRATION.md §6.18).
+  const taken = new Map(Object.entries(counts.newTakenByDeck));
+  const newCards = eligible.filter((c) => {
+    if (c.state !== null && c.state !== 0) return false;
+    const used = taken.get(c.deck) ?? 0;
+    if (used >= limits.dailyNewLimit) return false;
+    taken.set(c.deck, used + 1);
+    return true;
+  });
 
   return {
     learning,
     review: review.slice(0, remainingReviewSlots),
-    newCards: newCards.slice(0, remainingNewSlots),
+    newCards,
     learnAhead,
   };
 }

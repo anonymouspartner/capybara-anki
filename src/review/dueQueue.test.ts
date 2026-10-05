@@ -5,11 +5,11 @@ import type { DueCandidate } from "./types.ts";
 const NOW = new Date("2026-09-16T12:00:00Z");
 const YESTERDAY = new Date("2026-09-15T12:00:00Z");
 const TOMORROW = new Date("2026-09-17T12:00:00Z");
-const NO_LIMITS_TAKEN = { newTakenToday: 0, reviewTakenToday: 0 };
+const NO_LIMITS_TAKEN = { newTakenByDeck: {}, reviewTakenToday: 0 };
 const GENEROUS_LIMITS = { dailyNewLimit: 100, dailyReviewLimit: 100 };
 
 function candidate(overrides: Partial<DueCandidate>): DueCandidate {
-  return { noteId: "n1", cardKind: "recall", due: null, state: null, suspended: false, buried: false, ...overrides };
+  return { noteId: "n1", cardKind: "recall", due: null, state: null, suspended: false, buried: false, deck: "Ukrainian", ...overrides };
 }
 
 /** Most tests here only care about which notes came back and in what order —
@@ -110,7 +110,7 @@ Deno.test("daily new limit caps how many new cards appear, once today's count is
       candidate({ noteId: "new-3", state: null }),
     ],
     { dailyNewLimit: 2, dailyReviewLimit: 100 },
-    { newTakenToday: 1, reviewTakenToday: 0 },
+    { newTakenByDeck: { Ukrainian: 1 }, reviewTakenToday: 0 },
     NOW,
   );
   assertEquals(result.length, 1);
@@ -120,10 +120,44 @@ Deno.test("hitting the daily new limit already today shows zero new cards, not n
   const result = selectDueQueue(
     [candidate({ noteId: "new-1", state: null })],
     { dailyNewLimit: 5, dailyReviewLimit: 100 },
-    { newTakenToday: 9, reviewTakenToday: 0 },
+    { newTakenByDeck: { Ukrainian: 9 }, reviewTakenToday: 0 },
     NOW,
   );
   assertEquals(result, []);
+});
+
+Deno.test("each deck has its own new-card allowance: one deck's new cards never spend another's", () => {
+  const candidates = [
+    candidate({ noteId: "vocab-1", deck: "English" }),
+    candidate({ noteId: "vocab-2", deck: "English" }),
+    candidate({ noteId: "grammar-1", deck: "English Grammar" }),
+    candidate({ noteId: "grammar-2", deck: "English Grammar" }),
+    candidate({ noteId: "spell-1", cardKind: "spelling", deck: "English Spelling" }),
+  ];
+  const limits = { dailyNewLimit: 2, dailyReviewLimit: 100 };
+  // English has spent its whole allowance today; the others have spent none.
+  const counts = { newTakenByDeck: { English: 2 }, reviewTakenToday: 0 };
+  // The 2026-10-04 report: with one shared allowance every deck read 0 new
+  // here. Per deck, only English is exhausted.
+  assertEquals(noteIds(selectDueQueue(candidates, limits, counts, NOW)), ["grammar-1", "grammar-2", "spell-1"]);
+  assertEquals(summarizeDueQueue(candidates.filter((c) => c.deck === "English Grammar"), limits, counts, NOW).newCount, 2);
+  assertEquals(summarizeDueQueue(candidates.filter((c) => c.deck === "English"), limits, counts, NOW).newCount, 0);
+});
+
+Deno.test("the unscoped queue caps each deck's new cards separately", () => {
+  const result = selectDueQueue(
+    [
+      candidate({ noteId: "a-1", deck: "A" }),
+      candidate({ noteId: "a-2", deck: "A" }),
+      candidate({ noteId: "a-3", deck: "A" }),
+      candidate({ noteId: "b-1", deck: "B" }),
+    ],
+    { dailyNewLimit: 2, dailyReviewLimit: 100 },
+    { newTakenByDeck: { B: 1 }, reviewTakenToday: 0 },
+    NOW,
+  );
+  // A gets its full 2; B had 1 of its 2 left.
+  assertEquals(noteIds(result), ["a-1", "a-2", "b-1"]);
 });
 
 Deno.test("daily review limit caps overdue review cards but never touches learning cards", () => {

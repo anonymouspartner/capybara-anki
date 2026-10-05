@@ -278,7 +278,7 @@ end to end: `FsrsCardState.learningStep` round-trips through `replay.ts`
 ts-fsrs's own default) from a real `[]` (Anki's own "FSRS manages timing"
 convention).
 
-### 3.3 🟢 Daily limits were per-deck, not per-collection — fixed 2026-09-18
+### 3.3 🟢 Daily limits were per-deck, not per-collection — fixed 2026-09-18 (new-card half reversed 2026-10-04, §6.18)
 
 `getDailyCounts` used to scope each deck's allowance separately, so five decks
 each got 40 new / 200 review. Anki gives the collection 40. That was harmless
@@ -380,7 +380,7 @@ asked for:
 |---|---|
 | 4.1 | Upgrade to an FSRS-6-capable scheduler. **Done** — `ts-fsrs@^5.4`, verified 21-weight default vector. |
 | 4.2 | Wire up or delete `learning_steps`. **Done** — wired up (§3.2); the ts-fsrs upgrade made this the natural extension of 4.1, not a separate change. |
-| 4.3 | Decide per-deck vs per-collection daily limits. **Done, 2026-09-18 — per-collection, matching Anki.** See §3.3 and §6.9. |
+| 4.3 | Decide per-deck vs per-collection daily limits. **Done, 2026-09-18 — per-collection; reversed 2026-10-04 to per-deck new-card limits** after it starved every deck but the first. See §3.3, §6.9 and §6.18. |
 | 4.4 | Set the missing timezone. **Done** — Vika's `time_zone` is now `Europe/Kyiv`. |
 | 4.5 | Apply the leech migration. **Done**, applied live. |
 
@@ -1133,6 +1133,45 @@ guarded transaction, each step aborting unless it touched exactly the expected r
 Re-measured afterwards: 0 entities anywhere, 0 bot notes duplicating an imported
 note, 0 orphan reviews. `sync` redeployed from `f7ba2cd`, capybara-bot v112 live, web
 shell v11.
+
+### 6.18 New-card limits are per deck again, 2026-10-04
+
+**Reported:** Vika's Spelling, Pronunciation and Grammar decks all read
+`0 0 0`; only Vocabulary ever had anything in it. Nothing was missing — 110
+unstudied spelling cards, 93 pronunciation, 23 grammar — they were just never
+offered.
+
+**Cause:** §6.9's one shared new-card allowance (40 a day). The Start button
+opens Vocabulary first, Vocabulary always has a backlog (82 unstudied, and
+auto-learn adds up to 15 a day), so it spent all 40 every day and every other
+deck showed 0 new — permanently, not just that day. Four spelling reviews and
+zero pronunciation reviews in her whole history is what that looks like.
+§6.9's premise, "matching Anki", was also wrong: Anki gives each deck its own
+new-card limit.
+
+**Fix:** `dailyNewLimit` now applies per deck (`deckOfCard`), so no deck's new
+cards spend another's. `DailyCounts.newTakenToday` became `newTakenByDeck`;
+`categorize` charges each new card to its own deck, so the unscoped queue
+applies every deck's limit too. Reviews stay one shared count. The settings
+label now says "New cards per deck per day". The worst case is now
+`dailyNewLimit` × decks a day, so if that is too much the setting should be
+lowered, not shared again.
+
+**A counting bug found on the way:** `PostgresStore.getDailyCounts` counted a
+review as new if it was the first *by this user*, while `InMemoryStore` (and
+the queue itself, via card state) meant first *by anyone*. All the imported
+AnkiDroid history is under one person's id, so the other person's first
+answer to an old imported card counted as new: 19 of Vika's 59 "new" cards
+on 2026-10-04 were cards with years of history. Now any earlier review, by
+either person, makes it a review. Checked against that day's live data: 40
+new (the 40 bot words) and 69 reviews, where the old rule said 59 and 50. The
+pre-window lookup is now paged as well; a hundred long-studied cards can
+exceed PostgREST's 1000-row cap, and a truncated answer there would quietly
+turn old cards into new ones.
+
+**Not changed:** answering a word's recall card still buries its spelling
+card until the next study day (Anki's bury-siblings). That hid 80 of her
+spelling cards that evening, and is intended.
 
 ---
 

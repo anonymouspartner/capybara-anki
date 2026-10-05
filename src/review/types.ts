@@ -225,6 +225,9 @@ export interface DueCandidate {
    * does not). A bury that expired at this study day's rollover is already
    * `false` here — dueQueue.ts never re-derives it and never sees the raw key. */
   buried: boolean;
+  /** The deck this card is in (`deckOfCard`) — each deck has its own daily
+   * new-card budget, so the queue has to know which one a new card would spend. */
+  deck: string;
 }
 
 /** Identifies one due card — `dueQueue.ts`'s output unit. Just `noteId` stopped
@@ -246,17 +249,26 @@ export interface QueueSummary {
 
 /** How many of each kind this user has already reviewed today — the daily-limit
  * inputs `selectDueQueue` needs but has no way to compute itself (that's a query
- * over `reviews`, which makes it the caller's job, not this pure function's). */
+ * over `reviews`, which makes it the caller's job, not this pure function's).
+ *
+ * New cards are counted per deck (`deckOfCard`), because the new-card limit is
+ * per deck: one shared budget let whichever deck was opened first spend all of
+ * it, every day, and the others never got a new card (2026-10-04, see
+ * docs/MIGRATION.md §6.18). Reviews stay one shared count — what is due has to
+ * be done somewhere, and no deck is starved by another's reviews. */
 export interface DailyCounts {
-  newTakenToday: number;
+  /** Keyed by deck name; a deck with nothing taken today is simply absent. */
+  newTakenByDeck: Record<string, number>;
   reviewTakenToday: number;
 }
+
 
 /** The subset of `scheduler_config` the due-queue selector consumes. Distinct from
  * `FsrsSchedulerParams` (src/fsrs/types.ts) on purpose: replay needs the FSRS-tuning
  * fields, queue selection needs the daily-limit fields — a function's parameter
  * type should say what it actually uses, not "the whole config row." */
 export interface QueueLimits {
+  /** Per deck: each deck can introduce this many new cards a day. */
   dailyNewLimit: number;
   dailyReviewLimit: number;
 }

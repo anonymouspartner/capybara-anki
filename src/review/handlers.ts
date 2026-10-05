@@ -55,9 +55,10 @@ export function dayBoundary(config: SchedulerConfigRow): DayBoundary {
  * optionally scoped to one deck. The caller fetches each card's content
  * separately (or the HTTP layer batches it) — this function's job stops at "what
  * order," matching dueQueue.ts's own scope. `deck` narrows *which cards* are
- * candidates, but the daily-limit counts themselves are never deck-scoped
- * (§4.3: one collection-wide budget, not one per deck) — `getDailyCounts`
- * takes no `deck` argument at all. */
+ * candidates; `getDailyCounts` takes no `deck` argument because it returns
+ * every deck's new count at once, and `selectDueQueue` charges each new card
+ * to its own deck's allowance — so the unscoped queue applies every deck's
+ * limit too. */
 export async function getDueQueue(
   store: Store,
   userId: string,
@@ -89,10 +90,9 @@ export interface DeckSummary extends QueueSummary {
  * deck rather than one big query filtered client-side — simpler to keep correct
  * as `getDueCandidates` evolves, and there are a handful of decks, not
  * thousands. `getDailyCounts` is fetched once, outside the per-deck loop, and
- * shared across every row's `summarizeDueQueue` call — §4.3's one
- * collection-wide daily budget has to be the same number no matter which
- * deck's row is being computed, and asking once is also simply less work than
- * asking once per deck for an answer that never varied by deck to begin with. */
+ * shared across every row's `summarizeDueQueue` call — it already holds every
+ * deck's new count, so each row reads its own deck's allowance out of the one
+ * answer. */
 export async function getDeckSummaries(store: Store, userId: string, now: Date): Promise<DeckSummary[]> {
   const [decks, config, counts] = await Promise.all([
     store.getDecks(userId),

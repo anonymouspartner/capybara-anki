@@ -76,13 +76,15 @@ export interface Store {
    * `DayBoundary` — same reasoning as `getDailyCounts` taking it, and the same
    * per-implementation pattern (see `InMemoryStore`'s below). */
   getDueCandidates(userId: string, now: Date, deck?: string): Promise<DueCandidate[]>;
-  /** Daily new/review counts so far, across the whole collection — one shared
-   * daily allowance against `scheduler_config`'s limit, not a separate one per
-   * deck (§4.3, resolved 2026-09-18: matches Anki's own per-collection default
-   * rather than every deck getting its own full allowance). Unlike
-   * `getDueCandidates`, this takes no `deck` parameter — the count that
-   * matters for "how much of today's budget is left" is never scoped to
-   * which deck someone happens to be looking at. */
+  /** Today's counts so far: new cards per deck (each deck has its own new-card
+   * allowance — docs/MIGRATION.md §6.18 for why the shared one was dropped),
+   * reviews as one shared total. Takes no `deck` parameter: it returns every
+   * deck's count at once, which is what lets the unscoped queue and the deck
+   * list apply each deck's own allowance from one call.
+   *
+   * A review is "new" iff its card had never been reviewed before — by anyone.
+   * Cards are shared (D22), so one the other person already learned is a
+   * review, not a new card, whoever answers it next. */
   getDailyCounts(userId: string, now: Date): Promise<DailyCounts>;
   /** Every review at or after `since`, across every deck — the stats screen's
    * (step 6) raw material. Callers wanting all-time numbers (streak, success rate)
@@ -240,6 +242,7 @@ export class InMemoryStore implements Store {
           state: state?.state ?? null,
           suspended: state?.suspended ?? false,
           buried: state?.buriedOn === today,
+          deck: deckOfCard(note.deck, cardKind, note.language),
         });
       }
     }
@@ -255,19 +258,21 @@ export class InMemoryStore implements Store {
       ? { timeZone: config.timeZone, rolloverHour: config.rolloverHour }
       : UTC_MIDNIGHT;
     const today = ankiDayKey(now, boundary);
-    let newTakenToday = 0;
+    const newTakenByDeck: Record<string, number> = {};
     let reviewTakenToday = 0;
     for (const review of this.reviews.values()) {
       if (review.userId !== userId) continue;
       if (ankiDayKey(review.reviewedAt, boundary) !== today) continue;
       const stateAtSubmission = this.reviewStateAtSubmission.get(review.id);
       if (stateAtSubmission === null || stateAtSubmission === 0 || stateAtSubmission === undefined) {
-        newTakenToday++;
+        const note = this.notes.get(review.noteId);
+        const deck = note ? deckOfCard(note.deck, review.cardKind, note.language) : "";
+        newTakenByDeck[deck] = (newTakenByDeck[deck] ?? 0) + 1;
       } else {
         reviewTakenToday++;
       }
     }
-    return Promise.resolve({ newTakenToday, reviewTakenToday });
+    return Promise.resolve({ newTakenByDeck, reviewTakenToday });
   }
 
   getReviewsSince(userId: string, since: Date): Promise<ReviewRow[]> {

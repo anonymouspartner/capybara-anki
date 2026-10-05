@@ -508,7 +508,7 @@ async function showSettingsForm() {
 const SETTINGS_FIELDS = [
   {
     key: "dailyNewLimit",
-    label: "Daily new card limit",
+    label: "New cards per deck per day",
     type: "number",
     toInput: (v) => String(v),
     fromInput: (s) => Number(s),
