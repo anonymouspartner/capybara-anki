@@ -9,6 +9,7 @@
 import { validateNoteEdit } from "../review/mutations.ts";
 import type { NewNote } from "../review/types.ts";
 import type { Store } from "../review/store.ts";
+import { scriptLanguage } from "./types.ts";
 import type { ExtractedCard } from "./types.ts";
 
 /** Only what this module actually calls — a scan-side `Store` can be a real
@@ -41,6 +42,16 @@ export async function importExtractedCards(
   const rejected: ImportResult["rejected"] = [];
 
   for (const card of cards) {
+    // A translation in the card's own language is the model having translated
+    // nothing (2026-11-22: an English page came back "translated" into English).
+    // Such a card looks complete and teaches nothing, so it is refused here, where
+    // the person scanning sees it counted as skipped, rather than found weeks
+    // later on the back of a card.
+    if (scriptLanguage(`${card.lemmaTranslation ?? ""} ${card.exampleTranslation ?? ""}`) === opts.language) {
+      rejected.push({ card, errors: ["translation is in the same language as the word"] });
+      continue;
+    }
+
     const newNote: NewNote = {
       lemma: card.lemma,
       gloss: card.gloss,

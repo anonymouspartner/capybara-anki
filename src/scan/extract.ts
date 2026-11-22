@@ -1,5 +1,6 @@
 /**
- * Extracts yellow-highlighted vocabulary from a photo of a Ukrainian book page —
+ * Extracts yellow-highlighted vocabulary from a photo of a book page, Ukrainian or
+ * English (the model reports which; translations go into the other) —
  * the TypeScript port of `ukrainian-anki-scanner/claude_parser.py` (docs/DESIGN.md
  * §4.1, D6). Ported almost mechanically: same model, same prompt, the same five
  * failure branches (the two SDKs share an error-class hierarchy closely enough
@@ -18,8 +19,8 @@
  */
 
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.39.0";
-import { PageExtractionError } from "./types.ts";
-import type { ExtractedCard } from "./types.ts";
+import { PageExtractionError, scriptLanguage } from "./types.ts";
+import type { ExtractedCard, PageExtraction, PageLanguage } from "./types.ts";
 
 const MODEL = "claude-sonnet-5";
 // Thinking is adaptive by default and its tokens count against max_tokens (see
@@ -29,17 +30,27 @@ const MAX_TOKENS = 16000;
 const MAX_RETRIES = 4;
 
 const SYSTEM_PROMPT =
-  "You are a meticulous Ukrainian lexicographer building flashcards from photos " +
-  "of printed book pages. You read Ukrainian orthography accurately, including " +
-  "the letters і, ї, є and the apostrophe, and you never invent a word that is " +
-  "not visible on the page.";
+  "You are a meticulous Ukrainian–English lexicographer building flashcards from " +
+  "photos of printed book pages. A page is in Ukrainian or in English. You read " +
+  "both accurately — Ukrainian orthography included: the letters і, ї, є and the " +
+  "apostrophe — and you never invent a word that is not visible on the page.";
 
+// The page's own language decides which way everything is translated. This was
+// Ukrainian-only until 2026-11-22, when an English page was scanned: the prompt
+// asked for English translations of what was already English, so each card came
+// back with its "translation" a copy of itself, and the import filed it under
+// Ukrainian. Nothing failed, which is why it took a person reviewing to notice.
 const PROMPT = `Find every word or phrase marked with YELLOW highlighter on this book page.
 
-For each one:
+First decide what language the page is printed in: Ukrainian ("uk") or English ("en").
+Every translation you give goes into the OTHER one — a Ukrainian page gets English
+translations, an English page gets Ukrainian translations. A translation is never in
+the page's own language.
+
+For each highlighted word or phrase:
 - Give its lemma (dictionary base form), not the inflected form printed on the page.
 - Copy the full sentence it appears in, verbatim from the page, keeping the inflected form.
-- Translate that sentence, and gloss the lemma.
+- Translate that sentence into the other language, and gloss the lemma in the other language.
 - If a highlighted run spans several words that work as one unit (a fixed phrase or
   idiom), treat it as a single card with part_of_speech "expression".
 
@@ -57,6 +68,11 @@ const TOOL_NAME = "record_vocabulary";
 const TOOL_SCHEMA = {
   type: "object",
   properties: {
+    page_language: {
+      type: "string",
+      enum: ["uk", "en"],
+      description: "The language the page is printed in: 'uk' for Ukrainian, 'en' for English",
+    },
     cards: {
       type: "array",
       items: {
@@ -65,12 +81,12 @@ const TOOL_SCHEMA = {
           lemma: {
             type: "string",
             description:
-              "Dictionary base form of the highlighted Ukrainian word (e.g. 'письменниця', not 'письменницею'). For a highlighted multi-word expression, the whole expression in its base form.",
+              "Dictionary base form of the highlighted word, in the page's language (e.g. 'письменниця', not 'письменницею'; 'descend', not 'descended'). For a highlighted multi-word expression, the whole expression in its base form.",
           },
-          gloss: { type: "string", description: "Short English definition or gloss, a few words at most" },
+          gloss: { type: "string", description: "Short definition or gloss in the OTHER language (not the page's), a few words at most" },
           lemma_translation: {
             type: "string",
-            description: "Primary direct English translation of the base form",
+            description: "Primary direct translation of the base form into the OTHER language (not the page's)",
           },
           part_of_speech: {
             type: "string",
@@ -84,7 +100,7 @@ const TOOL_SCHEMA = {
           },
           example_translation: {
             type: "string",
-            description: "Accurate English translation of the full example sentence",
+            description: "Accurate translation of the full example sentence into the OTHER language (not the page's)",
           },
         },
         required: ["lemma", "gloss", "lemma_translation", "part_of_speech", "example", "example_translation"],
@@ -92,7 +108,7 @@ const TOOL_SCHEMA = {
       },
     },
   },
-  required: ["cards"],
+  required: ["page_language", "cards"],
   additionalProperties: false,
 };
 
@@ -125,7 +141,17 @@ interface PageImage {
   mediaType: "image/jpeg" | "image/png";
 }
 
-/** Extracts every highlighted card from one page photo. Raises
+/** What language a page's cards are in, read off the text itself rather than
+ * taken from the model's word for it: the sentences were copied verbatim from the
+ * page, so their script IS the page's language. `declared` only breaks the tie
+ * for a page with nothing to measure. */
+function pageLanguage(cards: ExtractedCard[], declared: unknown): PageLanguage {
+  const printed = cards.map((c) => `${c.lemma} ${c.example}`).join(" ");
+  return scriptLanguage(printed) ?? (declared === "en" ? "en" : "uk");
+}
+
+/** Extracts every highlighted card from one page photo, and the language the
+ * page is in. Raises
  * `PageExtractionError` with a message safe to show a user. `Anthropic.
  * AuthenticationError`/`PermissionDeniedError` are left to propagate, exactly
  * claude_parser.py's own contract — a caller processing several pages can then
@@ -133,7 +159,7 @@ interface PageImage {
 export async function extractVocabularyFromPage(
   image: PageImage,
   client: MessagesClient,
-): Promise<ExtractedCard[]> {
+): Promise<PageExtraction> {
   // deno-lint-ignore no-explicit-any
   let response: any;
   try {
@@ -196,8 +222,8 @@ export async function extractVocabularyFromPage(
     throw new PageExtractionError("The model returned no structured output for this page.");
   }
 
-  const { cards } = toolUse.input as { cards: Array<Record<string, string>> };
-  return cards.map((card) => ({
+  const input = toolUse.input as { page_language?: unknown; cards: Array<Record<string, string>> };
+  const cards: ExtractedCard[] = input.cards.map((card) => ({
     lemma: card.lemma,
     gloss: card.gloss,
     lemmaTranslation: card.lemma_translation,
@@ -205,4 +231,5 @@ export async function extractVocabularyFromPage(
     example: card.example,
     exampleTranslation: card.example_translation,
   }));
+  return { language: pageLanguage(cards, input.page_language), cards };
 }

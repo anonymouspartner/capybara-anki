@@ -48,9 +48,18 @@ Deno.test("one bad card doesn't block the rest of the page's good cards", async 
   assertEquals(result.imported[0].lemma, "капібара");
 });
 
+const EN_CARD: ExtractedCard = {
+  lemma: "sorrow",
+  gloss: "глибокий сум",
+  lemmaTranslation: "скорбота",
+  partOfSpeech: "noun",
+  example: "How shall I go in peace and without sorrow?",
+  exampleTranslation: "Як мені піти з миром і без скорботи?",
+};
+
 Deno.test("deck/language/source come from the import options, not the card", async () => {
   const store = new InMemoryStore();
-  const result = await importExtractedCards(store, [CARD], {
+  const result = await importExtractedCards(store, [EN_CARD], {
     deck: "English",
     language: "en",
     source: "scan",
@@ -58,4 +67,22 @@ Deno.test("deck/language/source come from the import options, not the card", asy
   assertEquals(result.imported[0].deck, "English");
   assertEquals(result.imported[0].language, "en");
   assertEquals(result.imported[0].source, "scan");
+});
+
+Deno.test("a card translated into its own language is rejected, not imported", async () => {
+  const store = new InMemoryStore();
+  const untranslated: ExtractedCard = {
+    ...EN_CARD,
+    lemmaTranslation: "sorrow",
+    exampleTranslation: EN_CARD.example,
+  };
+  const result = await importExtractedCards(store, [untranslated, EN_CARD], {
+    deck: "English",
+    language: "en",
+    source: "scan",
+  });
+  assertEquals(result.imported.map((n) => n.lemma), ["sorrow"]);
+  assertEquals(result.imported[0].lemmaTranslation, "скорбота");
+  assertEquals(result.rejected.length, 1);
+  assertEquals(store.notes.size, 1);
 });

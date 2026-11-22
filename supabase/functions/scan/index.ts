@@ -12,12 +12,12 @@
  *
  * Routes:
  *   POST /scan/page  → { imageBase64, mediaType, deck?, language? }
- *                       deck/language default to "Ukrainian"/"uk" — this pipeline
- *                       is a Ukrainian book-page scanner (its whole reason to
- *                       exist, per ukrainian-anki-scanner's own scope); the
- *                       override exists for whichever future deck turns out to
- *                       share the vocabulary schema (docs/DESIGN.md §7.5 finding 5).
- *                       Responds with `{ imported, rejected }` (src/scan/import.ts's
+ *                       language defaults to the page's own (Ukrainian or
+ *                       English, read off the extracted text) and deck to that
+ *                       language's deck. It was hardcoded "Ukrainian"/"uk" until
+ *                       an English page was scanned on 2026-11-22 and its cards
+ *                       landed in the Ukrainian deck, translated into English.
+ *                       Responds with `{ imported, rejected, language }` (src/scan/import.ts's
  *                       `ImportResult`) so the client can show what actually
  *                       landed, without gating the import on that display (D10).
  *
@@ -59,6 +59,12 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Same convention as `addCard` (src/review/handlers.ts): the deck picks itself
+ * from the language. */
+function deckForLanguage(language: "uk" | "en"): string {
+  return language === "uk" ? "Ukrainian" : "English";
+}
+
 interface ScanPageBody {
   imageBase64: string;
   mediaType: "image/jpeg" | "image/png";
@@ -75,9 +81,9 @@ async function route(req: Request, store: NoteCreator, apiKey: string): Promise<
       return json({ error: "imageBase64 and mediaType are required" }, 400);
     }
 
-    let cards;
+    let page;
     try {
-      cards = await extractVocabularyFromPage(
+      page = await extractVocabularyFromPage(
         { base64: body.imageBase64, mediaType: body.mediaType },
         createMessagesClient(apiKey),
       );
@@ -94,12 +100,13 @@ async function route(req: Request, store: NoteCreator, apiKey: string): Promise<
       throw e;
     }
 
-    const result = await importExtractedCards(store, cards, {
-      deck: body.deck ?? "Ukrainian",
-      language: body.language ?? "uk",
+    const language = body.language ?? page.language;
+    const result = await importExtractedCards(store, page.cards, {
+      deck: body.deck ?? deckForLanguage(language),
+      language,
       source: "scan",
     });
-    return json(result);
+    return json({ ...result, language });
   }
 
   return json({ error: "not found" }, 404);
