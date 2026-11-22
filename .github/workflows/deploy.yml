@@ -81,7 +81,7 @@ jobs:
           set -euo pipefail
           if [ "$FUNCTION" = "all" ]; then fns="sync scan pronounce"; else fns="$FUNCTION"; fi
           for fn in $fns; do
-            supabase functions deploy "$fn" --project-ref "$TARGET_REF" --no-verify-jwt --import-map deno.json
+            supabase functions deploy "$fn" --project-ref "$TARGET_REF" --no-verify-jwt --import-map deno.json --yes
           done
           echo "FUNCTIONS=$fns" >> "$GITHUB_ENV"
 
