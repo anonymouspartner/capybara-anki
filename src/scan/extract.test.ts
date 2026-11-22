@@ -19,6 +19,7 @@ const IMAGE = { base64: "ZmFrZQ==", mediaType: "image/jpeg" as const };
 function respondingWith(
   cards: Array<Record<string, string>>,
   stopReason = "end_turn",
+  pageLanguage: string | undefined = "uk",
 ): [MessagesClient, { params?: Record<string, unknown> }] {
   const captured: { params?: Record<string, unknown> } = {};
   const client: MessagesClient = {
@@ -27,7 +28,7 @@ function respondingWith(
       captured.params = params;
       return {
         stop_reason: stopReason,
-        content: [{ type: "tool_use", name: "record_vocabulary", input: { cards } }],
+        content: [{ type: "tool_use", name: "record_vocabulary", input: { page_language: pageLanguage, cards } }],
       };
     },
   };
@@ -62,7 +63,7 @@ Deno.test("the request carries the image and a schema-strict tool definition", a
 });
 
 Deno.test("an extracted card's fields map from the tool's snake_case to camelCase", async () => {
-  const [card] = await extractVocabularyFromPage(IMAGE, respondingWith([CARD])[0]);
+  const { cards: [card] } = await extractVocabularyFromPage(IMAGE, respondingWith([CARD])[0]);
   assertEquals(card.lemma, CARD.lemma);
   assertEquals(card.lemmaTranslation, CARD.lemma_translation);
   assertEquals(card.partOfSpeech, CARD.part_of_speech);
@@ -70,8 +71,40 @@ Deno.test("an extracted card's fields map from the tool's snake_case to camelCas
 });
 
 Deno.test("a page with no highlights yields no cards", async () => {
-  const cards = await extractVocabularyFromPage(IMAGE, respondingWith([])[0]);
+  const { cards } = await extractVocabularyFromPage(IMAGE, respondingWith([])[0]);
   assertEquals(cards, []);
+});
+
+const EN_CARD = {
+  lemma: "sorrow",
+  gloss: "глибокий сум",
+  lemma_translation: "скорбота",
+  part_of_speech: "noun",
+  example: "How shall I go in peace and without sorrow?",
+  example_translation: "Як мені піти з миром і без скорботи?",
+};
+
+Deno.test("a Ukrainian page is reported as Ukrainian, an English page as English", async () => {
+  assertEquals((await extractVocabularyFromPage(IMAGE, respondingWith([CARD])[0])).language, "uk");
+  assertEquals(
+    (await extractVocabularyFromPage(IMAGE, respondingWith([EN_CARD], "end_turn", "en")[0])).language,
+    "en",
+  );
+});
+
+Deno.test("the page's language is read off the text, not taken on the model's word", async () => {
+  // The exact shape of the 2026-11-22 failure: English sentences, labelled Ukrainian.
+  const page = await extractVocabularyFromPage(IMAGE, respondingWith([EN_CARD], "end_turn", "uk")[0]);
+  assertEquals(page.language, "en");
+});
+
+Deno.test("the prompt asks for the page's language and translation into the other one", async () => {
+  const [client, captured] = respondingWith([CARD]);
+  await extractVocabularyFromPage(IMAGE, client);
+  // deno-lint-ignore no-explicit-any
+  const tool = (captured.params!.tools as any[])[0];
+  assertEquals(tool.input_schema.properties.page_language.enum, ["uk", "en"]);
+  assertEquals(tool.input_schema.required.includes("page_language"), true);
 });
 
 Deno.test("a truncated response is reported rather than silently returned short", async () => {

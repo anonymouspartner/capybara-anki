@@ -233,7 +233,7 @@ Deno.serve({ port: 8787 }, async (req) => {
       language: body.language ?? "uk",
       source: "scan",
     });
-    return json(result);
+    return json({ ...result, language: body.language ?? "uk" });
   }
 
   if (req.method === "POST" && url.pathname === "/pronounce/score") {

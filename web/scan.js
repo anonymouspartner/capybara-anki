@@ -60,7 +60,7 @@ async function scanFile(file) {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? `Scan failed (${res.status})`);
-  return data; // { imported, rejected } — src/scan/import.ts's ImportResult
+  return data; // { imported, rejected, language } — src/scan/import.ts's ImportResult
 }
 
 function renderResult(label, result) {
@@ -71,6 +71,7 @@ function renderResult(label, result) {
     <div class="scan-result-label">${escapeHtml(label)}</div>
     <div class="scan-result-counts">
       <span class="imported">+${result.imported.length}</span>
+      ${result.language ? `<span class="rejected">→ ${result.language === "en" ? "English" : "Ukrainian"} deck</span>` : ""}
       ${result.rejected.length ? `<span class="rejected">${result.rejected.length} skipped</span>` : ""}
     </div>
     ${
